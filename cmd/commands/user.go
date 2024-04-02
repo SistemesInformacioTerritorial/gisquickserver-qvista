@@ -40,10 +40,10 @@ func runUserCommand(command func(dbConn *sqlx.DB, args conf.Args) error) error {
 	cfg := struct {
 		Postgres struct {
 			User               string `conf:"default:postgres"`
-			Password           string `conf:"default:postgres,mask"`
-			Host               string `conf:"default:postgres"`
+			Password           string `conf:"default:nexus,mask"`
+			Host               string `conf:"default:localhost"`
 			Name               string `conf:"default:postgres,env:POSTGRES_DB"`
-			Port               int `conf:"default:5432"`
+			Port               int    `conf:"default:5433"`
 			SSLMode            string `conf:"default:prefer"`
 			StatementCacheMode string `conf:"default:prepare"`
 		}

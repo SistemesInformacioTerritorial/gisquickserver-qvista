@@ -63,7 +63,8 @@ func (b *ByteSize) UnmarshalText(text []byte) error {
 func Serve() error {
 	cfg := struct {
 		Gisquick struct {
-			Debug                bool   `conf:"default:false"`
+			//Debug                bool   `conf:"default:false"`
+			Debug                bool   `conf:"default:true"`
 			Language             string `conf:"default:en-us"`
 			ProjectsRoot         string `conf:"default:/publish"`
 			MapCacheRoot         string
@@ -93,10 +94,10 @@ func Serve() error {
 		}
 		Postgres struct {
 			User               string `conf:"default:postgres"`
-			Password           string `conf:"default:postgres,mask"`
-			Host               string `conf:"default:postgres"`
+			Password           string `conf:"default:nexus,mask"`
+			Host               string `conf:"default:localhost"`
 			Name               string `conf:"default:postgres,env:POSTGRES_DB"`
-			Port               int    `conf:"default:5432"`
+			Port               int    `conf:"default:5433"`
 			MaxIdleConns       int    `conf:"default:3"`
 			MaxOpenConns       int    `conf:"default:3"`
 			SSLMode            string `conf:"default:disable"`
@@ -130,7 +131,10 @@ func Serve() error {
 		}
 		return fmt.Errorf("parsing config: %w", err)
 	}
-	logLevel := zap.InfoLevel
+	//logLevel := zap.InfoLevel
+	logLevel := zap.DebugLevel
+	cfg.Gisquick.Debug = true
+
 	if cfg.Gisquick.Debug {
 		logLevel = zap.DebugLevel
 	}
@@ -162,7 +166,7 @@ func Serve() error {
 		return fmt.Errorf("connecting to db: %w", err)
 	}
 	defer func() {
-		// log.Infow("shutdown", "status", "stopping database support", "host", cfg.Postgres.Host)
+		log.Infow("shutdown", "status", "stopping database support", "host", cfg.Postgres.Host)
 		dbConn.Close()
 	}()
 
@@ -273,10 +277,10 @@ func Serve() error {
 }
 
 func createLogger(level zapcore.Level) (*zap.SugaredLogger, error) {
-	config := zap.NewProductionConfig()
-	// config := zap.NewDevelopmentConfig()
+	//config := zap.NewProductionConfig()
+	config := zap.NewDevelopmentConfig()
 
-	// config.OutputPaths = []string{"stdout"}
+	config.OutputPaths = []string{"stdout"}
 	config.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
 	config.DisableStacktrace = true
 	config.Level.SetLevel(level)

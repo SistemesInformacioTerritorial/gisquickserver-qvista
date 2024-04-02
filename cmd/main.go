@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"syscall"
 
 	commands "github.com/gisquick/gisquick-server/cmd/commands"
 )
@@ -24,7 +23,7 @@ func main() {
 		printCommandsList()
 		return
 	}
-	syscall.Umask(0002)
+
 	cmd := os.Args[1]
 	os.Args = os.Args[1:]
 
