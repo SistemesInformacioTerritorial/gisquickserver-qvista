@@ -61,13 +61,22 @@ func (b *ByteSize) UnmarshalText(text []byte) error {
 }
 
 func Serve() error {
+
+	dir, err := os.Getwd()
+	if err != nil {
+		fmt.Println("Error al obtener el directorio actual:", err)
+
+	}
+
+	fmt.Println("Directorio actual:", dir)
+
 	cfg := struct {
 		Gisquick struct {
 			//Debug                bool   `conf:"default:false"`
 			Debug                bool   `conf:"default:true"`
 			Language             string `conf:"default:en-us"`
 			ProjectsRoot         string `conf:"default:/publish"`
-			MapCacheRoot         string
+			MapCacheRoot         string `conf:"default:http://localhost:8008"`
 			MapserverURL         string
 			PluginsURL           string
 			SignupAPI            bool
@@ -104,18 +113,19 @@ func Serve() error {
 			StatementCacheMode string `conf:"default:prepare"`
 		}
 		Redis struct {
-			Addr     string `conf:"default:redis:6379"` // "/var/run/redis/redis.sock"
+			//Addr string `conf:"default:redis:6379"` // "/var/run/redis/redis.sock"
+			Addr     string `` // localhost:6379
 			Network  string // "unix"
 			Password string `conf:"mask"`
 			DB       int    `conf:"default:0"`
 		}
 		Email struct {
-			Host                 string
-			Port                 int    `conf:"default:465"`
-			Encryption           string `conf:"default:SSL,help: Options [None|SSL|TLS|SSLTLS|STARTTLS]"`
-			Username             string
-			Password             string `conf:"mask"`
-			Sender               string
+			Host                 string `conf:"default:smtp.office365.com"`
+			Port                 int    `conf:"default:587"`
+			Encryption           string `conf:"default:STARTTLS,help: Options [None|SSL|TLS|SSLTLS|STARTTLS]"`
+			Username             string `conf:"default:auth.smtp@nexusgeographics.com"`
+			Password             string `conf:"9D1av%JcRVh"`
+			Sender               string `conf:"default:auth.smtp@nexusgeographics.com"`
 			ActivationSubject    string `conf:"default:Gisquick Registration"`
 			PasswordResetSubject string `conf:"default:Gisquick Password Reset"`
 		}
