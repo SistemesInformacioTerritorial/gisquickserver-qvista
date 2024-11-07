@@ -39,8 +39,9 @@ type Account struct {
 func runUserCommand(command func(dbConn *sqlx.DB, args conf.Args) error) error {
 	cfg := struct {
 		Postgres struct {
-			User               string `conf:"default:postgres"`
-			Password           string `conf:"default:nexus,mask"`
+			User string `conf:"default:postgres"`
+			//Password           string `conf:"default:nexus,mask"`
+			Password           string `conf:"default:nexus"`
 			Host               string `conf:"default:localhost"`
 			Name               string `conf:"default:postgres,env:POSTGRES_DB"`
 			Port               int    `conf:"default:5433"`

@@ -21,6 +21,7 @@ import (
 	"github.com/gisquick/gisquick-server/internal/domain"
 	"github.com/gisquick/gisquick-server/internal/infrastructure/cache"
 	"github.com/jellydator/ttlcache/v3"
+	"github.com/labstack/gommon/log"
 	"go.uber.org/zap"
 )
 
@@ -278,20 +279,35 @@ func (s *DiskStorage) Create(fullName string, meta json.RawMessage) (*domain.Pro
 }
 
 func (s *DiskStorage) UserProjects(username string) ([]string, error) {
+	log.Info("Passo per userprojects")
+	log.Info("Parametre:  username =", username)
+	log.Info("Configuracio: ProjectsRoot  =", s.ProjectsRoot)
 	projectsNames := make([]string, 0)
+
 	userDir := filepath.Join(s.ProjectsRoot, username)
+	log.Info("User dir = ", userDir)
+
 	entries, err := os.ReadDir(userDir)
+	log.Info("entries", entries)
 	if err != nil {
+		log.Info("entries with errors")
 		if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) {
 			return projectsNames, nil
 		}
 		return projectsNames, fmt.Errorf("listing projects: %v", err)
 	}
+	log.Info("entries with no errors, entering loop")
 	for _, entry := range entries {
 		if entry.IsDir() {
+			fmt.Println("entri is dir , entry name", entry.Name())
 			projectName := filepath.Join(username, entry.Name())
+			fmt.Println("project name ", projectName)
 			projPath := filepath.Join(userDir, entry.Name(), ".gisquick", "project.json")
+
+			//projPath := filepath.Join(userDir, entry.Name(), ".gisquick", "project.json")
+			log.Info("--------------------- project path    ----------", projPath)
 			if fileExists(projPath) {
+				log.Info("project path exists !")
 				projectsNames = append(projectsNames, projectName)
 			}
 		}

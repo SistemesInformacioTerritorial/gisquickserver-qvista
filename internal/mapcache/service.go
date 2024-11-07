@@ -78,7 +78,8 @@ func (c *Cache) GetLayer(p *domain.Project, layers string) Layer {
 	layersHash := fmt.Sprintf("%x", md5.Sum([]byte(layers)))
 
 	return Layer{
-		Map:         filepath.Join("/publish", p.Info.Map),
+		//jfs change publish path
+		Map:         filepath.Join("c:/gisquick/publish", p.Info.Map),
 		Project:     projectHash,
 		Publish:     "",
 		Name:        layersHash,
@@ -160,7 +161,10 @@ func (c *Cache) GetTileFile(p *domain.Project, tile Tile) (string, error) {
 		c.metrics.counter.Inc()
 		metatileUrl = layer.GetMetaTileURL(metatile)
 		q := metatileUrl.Query()
-		q.Set("MAP", filepath.Join("/publish", p.Info.Map))
+
+		//jfs
+		q.Set("MAP", filepath.Join("c:/gisquick/publish", p.Info.Map))
+		//q.Set("MAP", filepath.Join("/publish", p.Info.Map))
 		metatileUrl.RawQuery = q.Encode()
 		c.log.Infow("fetching metatile", "service", "mapcache", "url", metatileUrl.String())
 

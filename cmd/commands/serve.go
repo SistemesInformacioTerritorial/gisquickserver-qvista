@@ -73,11 +73,15 @@ func Serve() error {
 	cfg := struct {
 		Gisquick struct {
 			//Debug                bool   `conf:"default:false"`
-			Debug                bool   `conf:"default:true"`
-			Language             string `conf:"default:en-us"`
-			ProjectsRoot         string `conf:"default:/publish"`
-			MapCacheRoot         string `conf:"default:http://localhost:8008"`
-			MapserverURL         string
+			Debug        bool   `conf:"default:true"`
+			Language     string `conf:"default:en-us"`
+			ProjectsRoot string `conf:"default:c:/gisquick/publish"`
+			MapCacheRoot string
+			//MapserverURL string `conf:"default:http://localhost:8080/qgis-server"`
+
+			//jfs gisquick windowns
+			MapserverURL string `conf:"default:http://localhost:8080/cgi-bin/qgis_mapserv.fcgi.exe"`
+
 			PluginsURL           string
 			SignupAPI            bool
 			ProjectSizeLimit     ByteSize `conf:"default:-1"`
@@ -98,14 +102,16 @@ func Serve() error {
 			WriteTimeout    time.Duration `conf:"default:10s"`
 			IdleTimeout     time.Duration `conf:"default:120s"`
 			ShutdownTimeout time.Duration `conf:"default:20s"`
-			SiteURL         string        `conf:"default:http://localhost"`
+			SiteURL         string        `conf:"default:http://127.0.0.1"`
 			APIHost         string        `conf:"default:0.0.0.0:3000"`
 		}
 		Postgres struct {
-			User               string `conf:"default:postgres"`
-			Password           string `conf:"default:nexus,mask"`
-			Host               string `conf:"default:localhost"`
-			Name               string `conf:"default:postgres,env:POSTGRES_DB"`
+			User string `conf:"default:postgres"`
+			//Password           string `conf:"default:nexus,mask"`
+			Password string `conf:"default:nexus"` // trec la mask perque es pogui veure el password al arrencar
+			Host     string `conf:"default:localhost"`
+			Name     string `conf:"default:postgres,env:GISQUICK_POSTGRES_DB"`
+			//Name               string `conf:"default:postgres"`
 			Port               int    `conf:"default:5433"`
 			MaxIdleConns       int    `conf:"default:3"`
 			MaxOpenConns       int    `conf:"default:3"`
@@ -113,9 +119,11 @@ func Serve() error {
 			StatementCacheMode string `conf:"default:prepare"`
 		}
 		Redis struct {
+			Network string // "unix"
 			//Addr string `conf:"default:redis:6379"` // "/var/run/redis/redis.sock"
-			Addr     string `` // localhost:6379
-			Network  string // "unix"
+			Addr string `conf:"localhost:6379"`
+			//Addr string `localhost:6379` // localhost:6379
+
 			Password string `conf:"mask"`
 			DB       int    `conf:"default:0"`
 		}

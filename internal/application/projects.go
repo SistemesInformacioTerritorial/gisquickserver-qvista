@@ -100,20 +100,47 @@ func (s *projectService) ListProjectFiles(project string, checksum bool) ([]doma
 }
 
 func (s *projectService) GetUserProjects(username string) ([]domain.ProjectInfo, error) {
+	fmt.Printf("Passo per GetUserProjects")
+	/*
+		projects, err := s.repo.UserProjects(username)
+		if err != nil {
+			return nil, err
+		}
+		data := make([]domain.ProjectInfo, len(projects))
+		for i, name := range projects {
+			info, err := s.repo.GetProjectInfo(name)
+			if err != nil {
+				// TODO: skip or fail?
+				return nil, err
+			}
+			data[i] = info
+		}
+		return data, nil
+	*/
+
+	//jfs
+	fmt.Printf("Entrando a GetUserProjects\n")
 	projects, err := s.repo.UserProjects(username)
 	if err != nil {
+		fmt.Printf("Error obteniendo proyectos de usuario: %v\n", err)
 		return nil, err
 	}
+	fmt.Printf("Proyectos obtenidos: %v\n", projects)
 	data := make([]domain.ProjectInfo, len(projects))
 	for i, name := range projects {
+		fmt.Printf("Obteniendo información del proyecto: %s\n", name)
 		info, err := s.repo.GetProjectInfo(name)
 		if err != nil {
+			fmt.Printf("Error obteniendo información del proyecto %s: %v\n", name, err)
 			// TODO: skip or fail?
 			return nil, err
 		}
 		data[i] = info
+		fmt.Printf("Información del proyecto obtenida: %v\n", info)
 	}
+	fmt.Printf("Saliendo de GetUserProjects con datos: %v\n", data)
 	return data, nil
+
 }
 
 func (s *projectService) SaveFile(projectName, directory, pattern string, r io.Reader, size int64) (domain.ProjectFile, error) {

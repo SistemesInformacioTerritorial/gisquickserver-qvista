@@ -116,12 +116,34 @@ func (s *Server) handleGetProjects() func(echo.Context) error {
 	}
 }
 
+/*
 func (s *Server) handleGetUserProjects(c echo.Context) error {
 	username := c.Param("user")
 	data, err := s.projects.GetUserProjects(username)
 	if err != nil {
 		return err
 	}
+	return c.JSON(http.StatusOK, data)
+}*/
+//jfs
+func (s *Server) handleGetUserProjects(c echo.Context) error {
+	fmt.Println("Passant per handleGetUserProjects")
+	username := c.Param("user")
+	fmt.Println("username rebut", username)
+	// Dividir el nombre de usuario en tokens usando '/' como separador
+	tokens := strings.Split(username, "/")
+
+	// Tomar solo el primer token como el nombre de usuario
+	username = tokens[0]
+
+	fmt.Println("Username corregit: ", username)
+	data, err := s.projects.GetUserProjects(username)
+	if err != nil {
+		fmt.Println("Error: ", err)
+		return err
+	}
+	fmt.Println("Data: ", data)
+	//fmt.Println("JSON: ", c.JSON(http.StatusOK, data))
 	return c.JSON(http.StatusOK, data)
 }
 
@@ -374,7 +396,10 @@ func (s *Server) handleProjectOws() func(echo.Context) error {
 			return err
 		}
 		// TODO: hardcoded /publish/ directory!
-		owsProject := filepath.Join("/publish/", projectName, p.QgisFile)
+		// jfs, ja ho faig jo
+		//	owsProject := filepath.Join("/publish/", projectName, p.QgisFile)
+		owsProject := filepath.Join("c:/gisquick/publish/", projectName, p.QgisFile)
+
 		s.log.Infow("GetMap", "ows_project", owsProject)
 		query := c.Request().URL.Query()
 		query.Set("MAP", owsProject)
@@ -416,6 +441,7 @@ func (s *Server) handleCreateProject() func(echo.Context) error {
 }
 
 func (s *Server) handleGetProjectFullInfo() func(echo.Context) error {
+	s.log.Info("Passem per handleProjectFullInfo")
 	type FullInfo struct {
 		Auth       string          `json:"authentication"`
 		Name       string          `json:"name"`
@@ -724,7 +750,9 @@ func (s *Server) handleProjectReload(c echo.Context) error {
 		return err
 	}
 	// TODO: hardcoded /publish/ directory!
-	owsProject := filepath.Join("/publish/", projectName, p.QgisFile)
+	// jfs ja ho faig jo
+	//owsProject := filepath.Join("/publish/", projectName, p.QgisFile)
+	owsProject := filepath.Join("c:/gisquick/publish/", projectName, p.QgisFile)
 	params := url.Values{"MAP": {owsProject}}
 
 	req, err := http.NewRequest(http.MethodPost, s.Config.MapserverURL, nil)

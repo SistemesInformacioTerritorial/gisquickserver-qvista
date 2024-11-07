@@ -199,7 +199,10 @@ func (s *Server) handleMapOws() func(c echo.Context) error {
 
 		req := c.Request()
 		// Set MAP parameter
-		owsProject := filepath.Join("/publish", projectName, pInfo.QgisFile)
+		//jfs
+		//owsProject := filepath.Join("/publish", projectName, pInfo.QgisFile)
+		owsProject := filepath.Join("c:/gisquick/publish", projectName, pInfo.QgisFile)
+
 		query := req.URL.Query()
 		query.Set("MAP", owsProject)
 
