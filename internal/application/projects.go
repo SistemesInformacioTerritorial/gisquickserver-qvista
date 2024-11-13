@@ -376,7 +376,7 @@ func (s *projectService) GetLayersData(projectName string) (LayersData, error) {
 	return data, nil
 }
 
-type BaseLayer struct {
+type Layer struct {
 	Name             string                     `json:"name"`
 	Title            string                     `json:"title"`
 	Type             string                     `json:"type"`
@@ -388,9 +388,12 @@ type BaseLayer struct {
 	Extent           []float64                  `json:"extent"`
 	Provider         string                     `json:"provider_type"`
 	SourceParams     map[string]json.RawMessage `json:"source"`
-	CustomProperties json.RawMessage            `json:"custom,omitempty"`
 	Visible          bool                       `json:"visible"`
+	CustomProperties json.RawMessage            `json:"custom,omitempty"`
+}
 
+type BaseLayer struct {
+	Layer
 	// WMS params, old API
 	URL       string   `json:"url"`
 	Format    string   `json:"format"`
@@ -398,19 +401,10 @@ type BaseLayer struct {
 }
 
 type OverlayLayer struct {
-	Name  string `json:"name"`
-	Title string `json:"title"`
-	Type  string `json:"type"`
-	// Extent       []float64               `json:"extent"`
-	Projection           string                  `json:"projection"`
-	LegendURL            string                  `json:"legend_url,omitempty"`
-	LegendDisabled       bool                    `json:"legend_disabled,omitempty"`
-	Metadata             map[string]string       `json:"metadata"`
-	Attribution          map[string]string       `json:"attribution,omitempty"`
+	Layer
 	Attributes           []domain.LayerAttribute `json:"attributes,omitempty"`
 	Bands                []string                `json:"bands,omitempty"`
 	DrawingOrder         *int                    `json:"drawing_order,omitempty"`
-	Visible              bool                    `json:"visible"`
 	Hidden               bool                    `json:"hidden"`
 	Queryable            bool                    `json:"queryable"`
 	GeomType             string                  `json:"wkb_type,omitempty"`
@@ -419,8 +413,8 @@ type OverlayLayer struct {
 	AttributeTableFields []string                `json:"attr_table_fields,omitempty"`
 	InfoPanelFields      []string                `json:"info_panel_fields,omitempty"`
 	ExportFields         []string                `json:"export_fields,omitempty"`
-	CustomProperties     json.RawMessage         `json:"custom,omitempty"`
-	Relations            json.RawMessage         `json:"relations,omitempty"`
+	// Relations            json.RawMessage         `json:"relations,omitempty"`
+	Relations []map[string]any `json:"relations,omitempty"`
 }
 
 type SearchConfig struct {
@@ -440,12 +434,12 @@ func filterList(list []string, test func(item string) bool) []string {
 
 func MergeAttributeConfig(meta domain.LayerAttribute, settings domain.AttributeSettings) domain.LayerAttribute {
 	attr := domain.LayerAttribute{
-		Alias:      meta.Alias,
-		Name:       meta.Name,
-		Type:       meta.Type,
-		Widget:     meta.Widget,
-		Config:     meta.Config,
-		Constrains: meta.Constrains,
+		Alias:       meta.Alias,
+		Name:        meta.Name,
+		Type:        meta.Type,
+		Widget:      meta.Widget,
+		Config:      meta.Config,
+		Constraints: meta.Constraints,
 	}
 	if settings.Widget != "" {
 		attr.Widget = settings.Widget
@@ -468,8 +462,8 @@ func indexOf(items []string, value string) int {
 	return -1
 }
 
-func TransformLayersTree(tree []domain.TreeNode, accept func(id string) bool, transform func(id string) interface{}) ([]interface{}, error) {
-	list := make([]interface{}, 0)
+func TransformLayersTree(tree []domain.TreeNode, accept func(id string) bool, transform func(id string) any, groupsSettings map[string]domain.GroupSettings) ([]any, error) {
+	list := make([]any, 0)
 	// without reordering
 	// for _, n := range tree {
 	// 	if n.IsGroup() {
@@ -499,7 +493,7 @@ func TransformLayersTree(tree []domain.TreeNode, accept func(id string) bool, tr
 	}
 	for _, n := range tree {
 		if n.IsGroup() {
-			layers, err := TransformLayersTree(n.Children(), accept, transform)
+			layers, err := TransformLayersTree(n.Children(), accept, transform, groupsSettings)
 			if err != nil {
 				return nil, err
 			}
@@ -509,6 +503,13 @@ func TransformLayersTree(tree []domain.TreeNode, accept func(id string) bool, tr
 					"name":               n.GroupName(),
 					"layers":             layers,
 					"mutually_exclusive": g.MutuallyExclusive,
+				}
+				if g.WmsName != "" {
+					// ng["wms_name"] = g.WmsName
+					if s, ok := groupsSettings[g.WmsName]; ok {
+						ng["collapsed"] = s.Collapsed
+						ng["virtual_layer"] = s.VirtualLayer
+					}
 				}
 				list = append(list, ng)
 			}
@@ -614,19 +615,21 @@ func (s *projectService) GetMapConfig(projectName string, user domain.User) (map
 			lmeta := meta.Layers[id]
 			lset := settings.Layers[id]
 			ldata := BaseLayer{
-				Name:             lmeta.Name,
-				Title:            lmeta.Title,
-				Type:             lmeta.Type,
-				Projection:       lmeta.Projection,
-				Metadata:         lmeta.Metadata,
-				LegendURL:        lmeta.LegendURL,
-				Attribution:      lmeta.Attribution,
-				Extent:           lmeta.Extent,
-				Provider:         lmeta.Provider,
-				SourceParams:     lmeta.SourceParams,
-				Visible:          lmeta.Visible,
-				CustomProperties: lset.CustomProperties,
-				LegendDisabled:   lset.LegendDisabled,
+				Layer: Layer{
+					Name:             lmeta.Name,
+					Title:            lmeta.Title,
+					Type:             lmeta.Type,
+					Projection:       lmeta.Projection,
+					Metadata:         lmeta.Metadata,
+					LegendURL:        lmeta.LegendURL,
+					Attribution:      lmeta.Attribution,
+					Extent:           lmeta.Extent,
+					Provider:         lmeta.Provider,
+					SourceParams:     lmeta.SourceParams,
+					Visible:          lmeta.Visible,
+					CustomProperties: lset.CustomProperties,
+					LegendDisabled:   lset.LegendDisabled,
+				},
 			}
 			if lmeta.Type == "RasterLayer" && lmeta.Provider == "wms" {
 				ldata.Format = lmeta.SourceParams.String("format")
@@ -635,7 +638,11 @@ func (s *projectService) GetMapConfig(projectName string, user domain.User) (map
 			}
 			return ldata
 		},
+		settings.Groups,
 	)
+	if err != nil {
+		return nil, err
+	}
 
 	layers, err := TransformLayersTree(
 		overlays,
@@ -655,22 +662,51 @@ func (s *projectService) GetMapConfig(projectName string, user domain.User) (map
 
 			queryable := lmeta.Flags.Has("query") && !lset.Flags.Has("hidden") && lflags.Has("query")
 
+			relations := lmeta.Relations
+			if lset.QgisRelations != nil || lset.Relations != nil {
+				relations = make([]map[string]any, len(lmeta.Relations)+len(lset.Relations))
+				for i, r := range lmeta.Relations {
+					rid := r["id"].(string)
+					rs, hasSettings := lset.QgisRelations[rid]
+					if hasSettings {
+						relations[i] = make(map[string]any)
+						for k, v := range r {
+							relations[i][k] = v
+						}
+						for k, v := range rs {
+							relations[i][k] = v
+						}
+					} else {
+						relations[i] = lmeta.Relations[i]
+					}
+				}
+				offset := len(lmeta.Relations)
+				for i, r := range lset.Relations {
+					relations[offset+i] = r
+				}
+			}
 			ldata := OverlayLayer{
-				Bands:            lmeta.Bands,
-				Name:             lmeta.Name,
-				Title:            lmeta.Title,
-				Projection:       lmeta.Projection,
-				Type:             lmeta.Type,
-				Metadata:         lmeta.Metadata,
-				Relations:        lmeta.Relations,
-				Hidden:           lset.Flags.Has("hidden"),
-				Queryable:        queryable,
-				InfoPanel:        lset.InfoPanelComponent,
-				LegendURL:        lmeta.LegendURL,
-				Attribution:      lmeta.Attribution,
-				Visible:          lmeta.Visible,
-				CustomProperties: lset.CustomProperties,
-				LegendDisabled:   lset.LegendDisabled,
+				Layer: Layer{
+					Name:             lmeta.Name,
+					Title:            lmeta.Title,
+					Projection:       lmeta.Projection,
+					Type:             lmeta.Type,
+					Metadata:         lmeta.Metadata,
+					LegendURL:        lmeta.LegendURL,
+					Attribution:      lmeta.Attribution,
+					Visible:          lmeta.Visible,
+					CustomProperties: lset.CustomProperties,
+					LegendDisabled:   lset.LegendDisabled,
+					Extent:           lmeta.Extent,
+					Provider:         lmeta.Provider,
+					SourceParams:     lmeta.SourceParams,
+				},
+				Bands: lmeta.Bands,
+
+				Relations: relations,
+				Hidden:    lset.Flags.Has("hidden"),
+				Queryable: queryable,
+				InfoPanel: lset.InfoPanelComponent,
 			}
 			// if !lset.Flags.Has("render_off") {
 			// 	drawingOrder := indexOf(meta.LayersOrder, id)
@@ -743,8 +779,8 @@ func (s *projectService) GetMapConfig(projectName string, user domain.User) (map
 						for _, a := range lmeta.Attributes {
 							if isAttributeVisible(a.Name) {
 								attr := MergeAttributeConfig(a, lset.Attributes[a.Name])
-								if !attrsPerms[a.Name].Has("edit") && !attr.Constrains.Has("readonly") {
-									attr.Constrains = attr.Constrains.Union(domain.Flags{"readonly"})
+								if !attrsPerms[a.Name].Has("edit") && !attr.Constraints.Has("readonly") {
+									attr.Constraints = attr.Constraints.Union(domain.Flags{"readonly"})
 								}
 								ldata.Attributes = append(ldata.Attributes, attr)
 							}
@@ -762,8 +798,11 @@ func (s *projectService) GetMapConfig(projectName string, user domain.User) (map
 			}
 			return ldata
 		},
+		settings.Groups,
 	)
-
+	if err != nil {
+		return nil, err
+	}
 	data := make(map[string]interface{})
 	// data["authentication"] = settings.Authentication
 	data["use_mapcache"] = settings.MapCache
