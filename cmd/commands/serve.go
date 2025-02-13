@@ -103,14 +103,16 @@ func Serve() error {
 			IdleTimeout     time.Duration `conf:"default:120s"`
 			ShutdownTimeout time.Duration `conf:"default:20s"`
 			SiteURL         string        `conf:"default:http://127.0.0.1"`
-			APIHost         string        `conf:"default:0.0.0.0:3000"`
+			APIHost         string        `conf:"default:0.0.0.0:4000"`
 		}
 		Postgres struct {
 			User string `conf:"default:postgres"`
 			//Password           string `conf:"default:nexus,mask"`
 			Password string `conf:"default:nexus"` // trec la mask perque es pogui veure el password al arrencar
 			Host     string `conf:"default:localhost"`
-			Name     string `conf:"default:postgres,env:GISQUICK_POSTGRES_DB"`
+			//Name     string `conf:"default:postgres,env:GISQUICK_POSTGRES_DB"`
+			//	Name               string `conf:"default:postgres,env:POSTGRES_DB"`
+			Name string `conf:"default:pre,env:POSTGRES_DB"`
 			//Name               string `conf:"default:postgres"`
 			Port               int    `conf:"default:5433"`
 			MaxIdleConns       int    `conf:"default:3"`

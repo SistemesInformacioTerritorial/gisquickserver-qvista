@@ -20,8 +20,9 @@ func runMigrateCommand() error {
 			User     string `conf:"default:postgres"`
 			Password string `conf:"default:nexus"`
 			//Password           string `conf:"default:nexus,mask"`
-			Host               string `conf:"default:localhost"`
-			Name               string `conf:"default:postgres,env:POSTGRES_DB"`
+			Host string `conf:"default:localhost"`
+			//	Name               string `conf:"default:postgres,env:POSTGRES_DB"`
+			Name               string `conf:"default:pre,env:POSTGRES_DB"`
 			Port               int    `conf:"default:5433"`
 			SSLMode            string `conf:"default:prefer"`
 			StatementCacheMode string `conf:"default:prepare"`
