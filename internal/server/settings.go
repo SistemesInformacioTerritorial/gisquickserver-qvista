@@ -220,6 +220,7 @@ func (s *Server) handleUpload() func(echo.Context) error {
 
 		// first part should contain upload info
 		var info uploadInfo
+		s.log.Debugw("-----------------handle upload------------")
 		part, err := reader.NextPart()
 		if err != nil {
 			s.log.Errorw("uploading files", "project", projectName, zap.Error(err))
