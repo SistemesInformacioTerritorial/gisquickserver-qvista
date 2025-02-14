@@ -350,9 +350,6 @@ func (s *DiskStorage) GetProjectInfo(name string) (domain.ProjectInfo, error) {
 	projPath := filepath.Join(s.ProjectsRoot, name, ".gisquick", "project.json")
 	pInfo, err := s.projectInfoReader.Get(projPath)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return domain.ProjectInfo{}, domain.ErrProjectNotExists
-		}
 		return domain.ProjectInfo{}, err
 	}
 	pInfo.Name = name
@@ -857,7 +854,7 @@ func indexProjectFilesList(index *FilesIndex) []domain.ProjectFile {
 
 func (s *DiskStorage) UpdateFiles(projectName string, info domain.FilesChanges, next domain.FilesReader) ([]domain.ProjectFile, error) {
 	project, err := s.GetProjectInfo(projectName)
-	s.log.Debugw("Updating project", projectName)
+	s.log.Debug("Updating project", projectName)
 
 	if err != nil {
 		return nil, err
