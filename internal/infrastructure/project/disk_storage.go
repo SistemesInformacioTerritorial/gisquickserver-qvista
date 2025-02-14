@@ -921,7 +921,7 @@ func (s *DiskStorage) UpdateFiles(projectName string, info domain.FilesChanges, 
 				return nil, fmt.Errorf("calculated file hash doesn't match: %s", path)
 			}
 		}
-		s.log.Infow("saving file", "path", absPath, "hash", calcHash, "hashMatch", declaredInfo.Hash == calcHash, "cmtime", declaredInfo.Mtime.Local(), "smtime", fStat.ModTime())
+		// s.log.Infow("saving file", "path", absPath, "hash", calcHash, "hashMatch", declaredInfo.Hash == calcHash, "cmtime", declaredInfo.Mtime.Local(), "smtime", fStat.ModTime())
 		index.Set(path, finfo)
 	}
 	for _, path := range info.Removes {
