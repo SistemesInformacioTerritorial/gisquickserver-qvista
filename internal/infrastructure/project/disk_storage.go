@@ -279,16 +279,16 @@ func (s *DiskStorage) Create(fullName string, meta json.RawMessage) (*domain.Pro
 }
 
 func (s *DiskStorage) UserProjects(username string) ([]string, error) {
-	log.Info("Passo per userprojects")
-	log.Info("Parametre:  username =", username)
-	log.Info("Configuracio: ProjectsRoot  =", s.ProjectsRoot)
+	// log.Info("Passo per userprojects")
+	// log.Info("Parametre:  username =", username)
+	// log.Info("Configuracio: ProjectsRoot  =", s.ProjectsRoot)
 	projectsNames := make([]string, 0)
 
 	userDir := filepath.Join(s.ProjectsRoot, username)
-	log.Info("User dir = ", userDir)
+	// log.Info("User dir = ", userDir)
 
 	entries, err := os.ReadDir(userDir)
-	log.Info("entries", entries)
+	// log.Info("entries", entries)
 	if err != nil {
 		log.Info("entries with errors")
 		if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) {
@@ -296,7 +296,7 @@ func (s *DiskStorage) UserProjects(username string) ([]string, error) {
 		}
 		return projectsNames, fmt.Errorf("listing projects: %v", err)
 	}
-	log.Info("entries with no errors, entering loop")
+	//log.Info("entries with no errors, entering loop")
 	for _, entry := range entries {
 		if entry.IsDir() {
 			fmt.Println("entri is dir , entry name", entry.Name())
@@ -305,7 +305,7 @@ func (s *DiskStorage) UserProjects(username string) ([]string, error) {
 			projPath := filepath.Join(userDir, entry.Name(), ".gisquick", "project.json")
 
 			//projPath := filepath.Join(userDir, entry.Name(), ".gisquick", "project.json")
-			log.Info("--------------------- project path    ----------", projPath)
+			//		log.Info("--------------------- project path    ----------", projPath)
 			if fileExists(projPath) {
 				log.Info("project path exists !")
 				projectsNames = append(projectsNames, projectName)
@@ -855,60 +855,49 @@ func indexProjectFilesList(index *FilesIndex) []domain.ProjectFile {
 func (s *DiskStorage) UpdateFiles(projectName string, info domain.FilesChanges, next domain.FilesReader) ([]domain.ProjectFile, error) {
 	project, err := s.GetProjectInfo(projectName)
 	if err != nil {
+		s.log.Errorw("getting project info", "project", projectName, zap.Error(err))
 		return nil, err
 	}
 	index, err := s.filesIndex(projectName)
 	if err != nil {
+		s.log.Errorw("getting files index", "project", projectName, zap.Error(err))
 		return nil, err
 	}
 	updateFiles := info.Updates
 
-	// i := 0
-	// for {
-	// 	path, reader, err := next()
-	// 	if err != nil {
-	// 		if err == io.EOF {
-	// 			break
-	// 		}
-	// 		return nil, err
-	// 	}
-	// 	if i >= len(files) {
-	// 		return nil, fmt.Errorf("missing file change metadata: %s", path)
-	// 	}
-	// 	i += 1
-	// }
 	if len(updateFiles) > 0 && next == nil {
+		s.log.Errorw("required function for reading files is missing", "project", projectName)
 		return nil, fmt.Errorf("required function for reading files")
 	}
 	for i := 0; i < len(updateFiles); i++ {
 		path, reader, err := next()
 		if err != nil {
+			s.log.Errorw("reading upload files stream", "project", projectName, zap.Error(err))
 			return nil, fmt.Errorf("reading upload files stream: %w", err)
 		}
 		declaredInfo := updateFiles[i]
 		if declaredInfo.Path != path {
+			s.log.Errorw("declared file path does not match", "declaredPath", declaredInfo.Path, "actualPath", path)
 			return nil, err // TODO: more graceful error handling
 		}
 		absPath := filepath.Join(s.ProjectsRoot, projectName, path)
-		// if err := saveToFile(reader, absPath); err != nil {
-		// 	return err
-		// }
 		calcHash, err := saveToFile2(reader, absPath)
 		if err != nil {
 			reader.Close() // or move to saveToFile?
+			s.log.Errorw("saving file", "path", absPath, zap.Error(err))
 			return nil, err
 		}
-		// lmtime := declaredInfo.Mtime
 		lmtime := time.Unix(declaredInfo.Mtime, 0)
 		if err := os.Chtimes(absPath, lmtime, lmtime); err != nil {
-			s.log.Errorw("updating file's modification time", zap.Error(err))
+			s.log.Errorw("updating file's modification time", "path", absPath, zap.Error(err))
 		}
 		reader.Close()
 
 		fStat, err := os.Stat(absPath)
 		if err != nil {
-			s.log.Errorw("getting file's stat info", zap.Error(err))
+			s.log.Errorw("getting file's stat info", "path", absPath, zap.Error(err))
 		} else if declaredInfo.Size != fStat.Size() {
+			s.log.Errorw("declared file info doesn't match", "path", absPath, "declaredSize", declaredInfo.Size, "actualSize", fStat.Size())
 			return nil, fmt.Errorf("declared file info doesn't match: %s", path)
 		}
 		finfo := domain.FileInfo{Hash: calcHash, Size: declaredInfo.Size, Mtime: declaredInfo.Mtime}
@@ -916,10 +905,11 @@ func (s *DiskStorage) UpdateFiles(projectName string, info domain.FilesChanges, 
 			if strings.HasPrefix(declaredInfo.Hash, "dbhash:") {
 				finfo.Hash = declaredInfo.Hash
 			} else if declaredInfo.Hash != calcHash {
+				s.log.Errorw("calculated file hash doesn't match", "path", absPath, "declaredHash", declaredInfo.Hash, "calculatedHash", calcHash)
 				return nil, fmt.Errorf("calculated file hash doesn't match: %s", path)
 			}
 		}
-		// s.log.Infow("saving file", "path", absPath, "hash", calcHash, "hashMatch", declaredInfo.Hash == calcHash, "cmtime", declaredInfo.Mtime.Local(), "smtime", fStat.ModTime())
+		s.log.Infow("saving file", "path", absPath, "hash", calcHash, "hashMatch", declaredInfo.Hash == calcHash, "cmtime", declaredInfo.Mtime.Local(), "smtime", fStat.ModTime())
 		index.Set(path, finfo)
 	}
 	for _, path := range info.Removes {
@@ -930,21 +920,25 @@ func (s *DiskStorage) UpdateFiles(projectName string, info domain.FilesChanges, 
 				index.Delete(path)
 				continue
 			}
+			s.log.Errorw("removing file/directory", "path", absPath, zap.Error(err))
 			return nil, fmt.Errorf("removing file/directory %s: %w", path, err)
 		}
 		if info.IsDir() {
 			if err := os.RemoveAll(absPath); err != nil {
+				s.log.Errorw("removing project directory", "path", absPath, zap.Error(err))
 				return nil, fmt.Errorf("removing project directory %s: %w", path, err) // TODO: or allow this kind of error?
 			}
 			index.DeleteDir(path)
 		} else {
 			if err := os.Remove(absPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+				s.log.Errorw("removing project file", "path", absPath, zap.Error(err))
 				return nil, fmt.Errorf("removing project file %s: %w", path, err) // TODO: or allow this kind of error?
 			}
 			index.Delete(path)
 		}
 	}
 	if err := saveJsonFile(filepath.Join(s.ProjectsRoot, projectName, ".gisquick", "filesmap.json"), index); err != nil {
+		s.log.Errorw("saving files index", "project", projectName, zap.Error(err))
 		return nil, fmt.Errorf("saving files index: %w", err)
 	}
 	size := index.TotalSize()
@@ -954,8 +948,10 @@ func (s *DiskStorage) UpdateFiles(projectName string, info domain.FilesChanges, 
 		project.LastUpdate = time.Now().UTC()
 	}
 	if err := s.saveConfigFile(projectName, "project.json", project); err != nil {
+		s.log.Errorw("updating project file", "project", projectName, zap.Error(err))
 		return nil, fmt.Errorf("updating project file: %w", err)
 	}
+	s.log.Infow("files updated successfully", "project", projectName, "totalSize", size)
 	return indexProjectFilesList(index), nil
 }
 
