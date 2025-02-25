@@ -263,7 +263,8 @@ func (s *DiskStorage) Create(fullName string, meta json.RawMessage) (*domain.Pro
 		s.log.Errorw("parsing qgis meta", zap.Error(err))
 		return nil, domain.ErrInvalidQgisMeta
 	}
-
+	log.Debug("Qgis meta: ", i)
+	log.Debug("About to save qgis.json")
 	if err := s.saveConfigFile(fullName, "qgis.json", meta); err != nil {
 		return nil, fmt.Errorf("creating qgis meta file: %w", err)
 	}
@@ -275,6 +276,8 @@ func (s *DiskStorage) Create(fullName string, meta json.RawMessage) (*domain.Pro
 		State:      "empty",
 		Created:    time.Now().UTC(),
 	}
+	log.Debug("Project info: ", info)
+	log.Debug("About to save project.json")
 	return &info, s.saveConfigFile(fullName, "project.json", info)
 }
 
@@ -642,12 +645,14 @@ func saveToFile2(src io.Reader, filename string) (h string, err error) {
 
 func (s *DiskStorage) CreateFile(projectName, directory, pattern string, r io.Reader) (finfo domain.ProjectFile, err error) {
 	finfo = domain.ProjectFile{}
+	s.log.Debugw("Creating file", "projectName", projectName, "directory", directory, "pattern", pattern)
 	if !s.CheckProjectExists(projectName) {
 		err = domain.ErrProjectNotExists
 		return
 	}
 	destDir := filepath.Join(s.ProjectsRoot, projectName, directory)
 	err = os.MkdirAll(destDir, 0775)
+
 	if err != nil {
 		err = fmt.Errorf("creating directory: %w", err)
 		return
@@ -697,7 +702,8 @@ func (s *DiskStorage) CreateFile(projectName, directory, pattern string, r io.Re
 	finfo.Mtime = fStat.ModTime().Unix()
 	finfo.Path = f.Name()
 	finfo.Hash = fmt.Sprintf("%x", sha.Sum(nil))
-
+	log.Debug("finfo.Hash = ", finfo.Hash)
+	s.log.Debugw("File created", "projectName", projectName, "directory", directory, "pattern", pattern, "hash", finfo.Hash)
 	if strings.Contains(pattern, "<hash>") {
 		pattern = strings.Replace(pattern, "<hash>", finfo.Hash[:10], 1)
 		if err = os.Rename(f.Name(), filepath.Join(destDir, pattern)); err != nil {
@@ -717,6 +723,7 @@ func (s *DiskStorage) CreateFile(projectName, directory, pattern string, r io.Re
 		s.log.Errorw("getting project info", zap.Error(err))
 	}
 	pInfo.Size += finfo.Size
+	s.log.Debugw("Updating project file", "projectName", projectName, "size", pInfo.Size)
 	if err := s.saveConfigFile(projectName, "project.json", pInfo); err != nil {
 		s.log.Errorw("updating project file", zap.Error(err))
 	}
@@ -853,11 +860,14 @@ func indexProjectFilesList(index *FilesIndex) []domain.ProjectFile {
 }
 
 func (s *DiskStorage) UpdateFiles(projectName string, info domain.FilesChanges, next domain.FilesReader) ([]domain.ProjectFile, error) {
+
+	s.log.Info("updating project files", "project", projectName)
 	project, err := s.GetProjectInfo(projectName)
 	if err != nil {
 		s.log.Errorw("getting project info", "project", projectName, zap.Error(err))
 		return nil, err
 	}
+	s.log.Infow("project info", "project", projectName, "state", project.State, "size", project.Size)
 	index, err := s.filesIndex(projectName)
 	if err != nil {
 		s.log.Errorw("getting files index", "project", projectName, zap.Error(err))
@@ -869,6 +879,7 @@ func (s *DiskStorage) UpdateFiles(projectName string, info domain.FilesChanges, 
 		s.log.Errorw("required function for reading files is missing", "project", projectName)
 		return nil, fmt.Errorf("required function for reading files")
 	}
+	s.log.Infow("updating files", "project", projectName, "totalFiles", len(updateFiles), "totalRemoves", len(info.Removes))
 	for i := 0; i < len(updateFiles); i++ {
 		path, reader, err := next()
 		if err != nil {
@@ -893,6 +904,7 @@ func (s *DiskStorage) UpdateFiles(projectName string, info domain.FilesChanges, 
 		}
 		reader.Close()
 
+		s.log.Debugw("file saved", "path", absPath, "hash", calcHash, "cmtime", lmtime.Local())
 		fStat, err := os.Stat(absPath)
 		if err != nil {
 			s.log.Errorw("getting file's stat info", "path", absPath, zap.Error(err))
@@ -901,6 +913,7 @@ func (s *DiskStorage) UpdateFiles(projectName string, info domain.FilesChanges, 
 			return nil, fmt.Errorf("declared file info doesn't match: %s", path)
 		}
 		finfo := domain.FileInfo{Hash: calcHash, Size: declaredInfo.Size, Mtime: declaredInfo.Mtime}
+		s.log.Debugw("file info", "path", absPath, "hash", calcHash, "size", declaredInfo.Size, "mtime", declaredInfo.Mtime)
 		if declaredInfo.Hash != "" {
 			if strings.HasPrefix(declaredInfo.Hash, "dbhash:") {
 				finfo.Hash = declaredInfo.Hash
@@ -909,7 +922,7 @@ func (s *DiskStorage) UpdateFiles(projectName string, info domain.FilesChanges, 
 				return nil, fmt.Errorf("calculated file hash doesn't match: %s", path)
 			}
 		}
-		s.log.Infow("saving file", "path", absPath, "hash", calcHash, "hashMatch", declaredInfo.Hash == calcHash, "cmtime", declaredInfo.Mtime.Local(), "smtime", fStat.ModTime())
+		s.log.Infow("saving file", "path", absPath, "hash", calcHash, "hashMatch", declaredInfo.Hash == calcHash, "cmtime", time.Unix(declaredInfo.Mtime, 0).Local(), "smtime", fStat.ModTime())
 		index.Set(path, finfo)
 	}
 	for _, path := range info.Removes {
