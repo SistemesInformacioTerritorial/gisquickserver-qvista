@@ -25,6 +25,8 @@ type websocketsMap struct {
 	sync.RWMutex
 	name        string
 	connections map[string]*websocket.Conn
+	// jfs: I think this is a better approach
+	writeMutex sync.Mutex
 }
 
 func (w *websocketsMap) Set(key string, conn *websocket.Conn) {
@@ -52,6 +54,8 @@ func (w *websocketsMap) Get(key string) *websocket.Conn {
 // 	return ErrConnectionNotFound
 // }
 
+/* COmmented out the above function and added the below function
+// jfs: I think this is a better approach
 func (w *websocketsMap) Send(key string, msgType string, data interface{}) error {
 	dest := w.Get(key)
 	if dest != nil {
@@ -59,6 +63,17 @@ func (w *websocketsMap) Send(key string, msgType string, data interface{}) error
 	}
 	// return ErrConnectionNotFound // probably for MustSend variant
 	return nil
+}
+*/
+// / jfs: I think this is a better approach
+func (w *websocketsMap) Send(key string, msgType string, data interface{}) error {
+	dest := w.Get(key)
+	if dest != nil {
+		w.writeMutex.Lock()
+		defer w.writeMutex.Unlock()
+		return dest.WriteJSON(message{Type: msgType, Data: data})
+	}
+	return ErrConnectionNotFound
 }
 
 type SettingsWS struct {
@@ -97,35 +112,50 @@ func (s *SettingsWS) AppChannel() *websocketsMap {
 func (s *SettingsWS) bridgeHandler(id string, src *websocketsMap, dest *websocketsMap, w http.ResponseWriter, r *http.Request) (err error) {
 	conn, err := s.upgrader.Upgrade(w, r, nil)
 	if err != nil {
+		s.log.Errorw("failed to upgrade websocket connection", "user", id, "channel", src.name, zap.Error(err))
 		return
 	}
 	src.Set(id, conn)
 	s.log.Infow("websocket connection started", "user", id, "channel", src.name)
 	if destConn := dest.Get(id); destConn != nil {
 		info := map[string]string{"client": r.Header.Get("User-Agent")}
-		destConn.WriteJSON(message{Type: "PluginStatus", Status: 200, Data: info})
+		if err := destConn.WriteJSON(message{Type: "PluginStatus", Status: 200, Data: info}); err != nil {
+			s.log.Errorw("failed to send PluginStatus message", "user", id, "channel", dest.name, zap.Error(err))
+		}
 	}
 	for {
 		msgType, msg, rerr := conn.ReadMessage()
 		if rerr != nil {
-			// log.Println(err)
 			if !websocket.IsCloseError(rerr, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
 				err = rerr
 				s.log.Errorw("websocket error", "user", id, "channel", src.name, zap.Error(rerr))
 			}
 			break
 		}
-		// msgType == websocket.PingMessage
 		if bytes.Compare(msg, []byte("Ping")) == 0 {
+			s.log.Debugw("received Ping message", "user", id, "channel", src.name)
 			continue
 		}
 
 		if msgType == websocket.TextMessage {
+			s.log.Debugw("received TextMessage", "user", id, "channel", src.name, "message", string(msg))
 			if destConn := dest.Get(id); destConn != nil {
+				//jfs: I think this is a better approach
+				s.log.Debugw("forwarding message", "user", id, "channel", dest.name, "message", string(msg))
+				dest.writeMutex.Lock()
+				s.log.Debugw("writeMutex locked", "user", id, "channel", dest.name)
+				//
 				if err = destConn.WriteMessage(msgType, msg); err != nil {
-					break // or better reply with error message?
+					s.log.Errorw("failed to forward message", "user", id, "channel", dest.name, zap.Error(err))
+					break
 				}
+
+				//jfs: I think this is a better approach
+				dest.writeMutex.Unlock()
+				s.log.Debugw("writeMutex unlocked", "user", id, "channel", dest.name)
+				//
 			} else {
+				s.log.Warnw("destination connection not found", "user", id, "channel", dest.name)
 				conn.WriteJSON(message{Type: "PluginStatus", Status: 503}) // rename to TargetStatus or ReceiverStatus
 			}
 		} else if msgType == websocket.CloseMessage {
@@ -136,7 +166,9 @@ func (s *SettingsWS) bridgeHandler(id string, src *websocketsMap, dest *websocke
 	src.Set(id, nil)
 	s.log.Infow("websocket connection closed", "user", id, "channel", src.name)
 	if destConn := dest.Get(id); destConn != nil {
-		destConn.WriteJSON(message{Type: "PluginStatus", Status: 503})
+		if err := destConn.WriteJSON(message{Type: "PluginStatus", Status: 503}); err != nil {
+			s.log.Errorw("failed to send PluginStatus message", "user", id, "channel", dest.name, zap.Error(err))
+		}
 	}
 	return
 }
