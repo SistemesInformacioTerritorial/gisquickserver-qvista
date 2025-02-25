@@ -6,8 +6,10 @@ import (
 )
 
 func (s *Server) handleWebAppWS(c echo.Context) error {
+	s.log.Debug("websocket handler handleWebAppWS", zap.String("channel", "webapp"))
 	user, err := s.auth.GetUser(c)
 	if err != nil {
+		s.log.Errorw("websocket handler at handleWebAppWS", "channel", "webapp", "error", err)
 		return err
 	}
 	err = s.sws.WebAppHandler(user.Username, c.Response(), c.Request())
@@ -18,8 +20,10 @@ func (s *Server) handleWebAppWS(c echo.Context) error {
 }
 
 func (s *Server) handlePluginWS(c echo.Context) error {
+	s.log.Debug("websocket handler handlePluginWS", zap.String("channel", "plugin"))
 	user, err := s.auth.GetUser(c)
 	if err != nil {
+		s.log.Errorw("websocket handler at handlePluginWS", "channel", "plugin", "error", err)
 		return err
 	}
 	err = s.sws.PluginHandler(user.Username, c.Response(), c.Request())
