@@ -75,7 +75,7 @@ func Serve() error {
 			//Debug                bool   `conf:"default:false"`
 			Debug        bool   `conf:"default:true"`
 			Language     string `conf:"default:en-us"`
-			ProjectsRoot string `conf:"default:c:/gisquick/publish"`
+			ProjectsRoot string `conf:"default:c:/gisquickpre/publish"`
 			MapCacheRoot string
 			//MapserverURL string `conf:"default:http://localhost:8080/qgis-server"`
 

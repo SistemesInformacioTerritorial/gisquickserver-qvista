@@ -834,10 +834,22 @@ func (s *projectService) GetMapConfig(projectName string, user domain.User) (map
 	}
 	// temporary backward compatibility
 	data["root_title"] = data["title"]
-
 	data["name"] = projectName
-	data["ows_url"] = fmt.Sprintf("/api/map/ows/%s", projectName)
-	data["ows_project"] = projectName
+	//jfs - 2025-02-25 - added to support OWS
+
+	owsProjectName := projectName
+	if strings.Contains(owsProjectName, "\\") {
+		owsProjectName = strings.ReplaceAll(owsProjectName, "\\", "/")
+	}
+	data["ows_url"] = fmt.Sprintf("/api/map/ows/%s", owsProjectName)
+
+	//data["ows_project"] = projectName
+	data["ows_project"] = owsProjectName
+
+	//data["ows_url"] = fmt.Sprintf("/api/map/ows/%s", filepath.ToSlash(projectName))
+	//data["ows_project"] = filepath.ToSlash(projectName)
+
+	s.log.Infow("GetMapConfig", "projectName", projectName, "ows_url", data["ows_url"], "ows_project", data["ows_project"])
 
 	topics := make([]domain.Topic, 0)
 
