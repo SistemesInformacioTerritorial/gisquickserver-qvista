@@ -111,6 +111,35 @@ func replaceQueryParam(query url.Values, name, value string) {
 
 func (s *Server) handleMapOws() func(c echo.Context) error {
 	/*
+			# Función `handleMapOws` - Explicación de Alto Nivel
+			En resumen, actúa como una capa de seguridad y control que gestiona todas las comunicaciones entre el cliente y el servidor QGIS,
+			asegurando que cada usuario solo pueda acceder a la información y realizar las operaciones para las que tiene permiso.
+		La función `handleMapOws` es un proxy inteligente que actúa como intermediario entre el cliente y un servidor QGIS.
+		Su objetivo principal es manejar las peticiones OWS (Open Web Services) que incluyen servicios como WMS (Web Map Service) y WFS (Web Feature Service).
+
+		## Funcionalidad principal:
+
+		1. **Proxy inverso**: Redirige peticiones al servidor QGIS mientras modifica ciertos parámetros.
+
+		2. **Gestión de proyectos**: Obtiene la información del proyecto QGIS y configura el parámetro MAP para que apunte al archivo correcto.
+
+		3. **Seguridad y permisos**:
+		   - Verifica que el usuario tenga los permisos necesarios para acceder a las capas
+		   - Filtra qué atributos puede ver el usuario
+		   - Controla operaciones de escritura (insert/update/delete) según permisos
+
+		4. **Manejo específico por tipo de petición**:
+		   - Para WMS GetCapabilities: Reescribe las URLs en la respuesta para mantener consistencia
+		   - Para WMS GetMap: Verifica permisos de visualización de capas
+		   - Para WFS GetFeature: Controla qué atributos puede consultar el usuario
+		   - Para WFS Transaction: Controla permisos de inserción, actualización y eliminación
+
+		5. **Transformación de contenido**:
+		   - Puede modificar las peticiones XML para filtrar atributos no permitidos
+		   - Reescribe respuestas para ajustar referencias de URLs
+
+	*/
+	/*
 		director := func(req *http.Request) {
 			target, _ := url.Parse(s.Config.MapserverURL)
 			query := req.URL.Query()
