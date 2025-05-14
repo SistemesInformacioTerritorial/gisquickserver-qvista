@@ -1,135 +1,107 @@
-# Gisquick application server (backend)
+# QVistaWeb - Adaptació de Gisquick per a Windows
+
+Aquest projecte és una adaptació de Gisquick específicament dissenyada per a entorns Windows.
+
+## Compilació
+
+Per compilar l'executable:
+
+```bash
+# Actualitzar dependències
+go mod tidy
+
+# Compilar versió optimitzada
+go build -o qvistaweb.exe -ldflags="-s -w" cmd\main.go
+```
+
+## Execució
+
+Per iniciar el servidor:
+
+```bash
+qvistaweb.exe serve
+```
+
+Comandes disponibles:
+
+- `serve`: Inicia el servidor web
+- `adduser`: Afegeix un usuari nou
+- `addsuperuser`: Afegeix un usuari amb privilegis d'administrador
+- `deleteuser`: Elimina un usuari existent
+- `dumpusers`: Exporta llista d'usuaris
+- `loadusers`: Importa llista d'usuaris
+
+## Configuració externa
+
+QVistaWeb utilitza un arxiu de configuració YAML per definir el seu comportament. Aquest arxiu ha d'ubicar-se en algun d'aquests llocs:
+
+- Al directori actual: config.yaml
+- Al directori de configuració: `./config/config.yaml`
+- A la ruta: `/etc/gisquick/config.yaml`
+- O especificat mitjançant la variable d'entorn: `GISQUICK_CONFIG`
+
+### Exemple d'arxiu de configuració (config.yaml)
+
+```yaml
+gisquick:
+  debug: true
+  language: ca-es
+  projectsRoot: c:/gisquick/publish
+  mapserverURL: http://localhost:8080/cgi-bin/qgis_mapserv.fcgi.exe
+  projectSizeLimit: 100M
+  accountStorageLimit: 1G
+  projectCustomization: true
+
+auth:
+  sessionExpiration: 24h
+  emailTokenExpiration: 72h
+  secretKey: la-teva-clau-secreta
+
+web:
+  readTimeout: 5s
+  writeTimeout: 10s
+  idleTimeout: 120s
+  shutdownTimeout: 20s
+  siteURL: http://127.0.0.1
+  apiHost: 0.0.0.0:3000
+
+postgres:
+  user: postgres
+  password: nexus
+  host: localhost
+  name: postgres
+  port: 5433
+  maxIdleConns: 3
+  maxOpenConns: 3
+  sslMode: disable
+  statementCacheMode: prepare
+
+redis:
+  addr: localhost:6379
+  password: ""
+  db: 0
+
+email:
+  host: smtp.example.com
+  port: 587
+  encryption: STARTTLS
+  username: user@example.com
+  password: password
+  sender: user@example.com
+  activationSubject: QVistaWeb Registre
+  passwordResetSubject: QVistaWeb Restabliment de Contrasenya
+```
+
+### Sobreescriure la configuració amb variables d'entorn
+
+Totes les configuracions poden ser sobreescrites mitjançant variables d'entorn amb el prefix `GISQUICK_`:
 
 ```
-docker build -t gisquick/server-dev -f ./docker/Dockerfile.dev .
+set GISQUICK_POSTGRES_PASSWORD=altra-contrasenya
+set GISQUICK_WEB_APIHOST=0.0.0.0:4000
 ```
 
-```
-docker build -t gisquick/server -f ./docker/Dockerfile-alpine .
+## Repositori del projecte
 
-
-# Gisquick for Windows
-
-go build -o gisquick_8080_5433_env_nomask_lc_allwin_v2.exe -ldflags="-s -w" cmd\main.go
-```
-## conf
-
-cfg := struct {
-		Gisquick struct {
-			//Debug                bool   `conf:"default:false"`
-			Debug        bool   `conf:"default:true"`
-			Language     string `conf:"default:en-us"`
-			ProjectsRoot string `conf:"default:c:/gisquick/publish"`
-			MapCacheRoot string
-			//MapserverURL string `conf:"default:http://localhost:8080/qgis-server"`
-
-			//jfs gisquick windowns
-			MapserverURL string `conf:"default:http://localhost:8080/cgi-bin/qgis_mapserv.fcgi.exe"`
-
-			PluginsURL           string
-			SignupAPI            bool
-			ProjectSizeLimit     ByteSize `conf:"default:-1"`
-			AccountStorageLimit  ByteSize `conf:"default:-1"`
-			AccountProjectsLimit int      `conf:"default:-1"`
-			AccountLimiterConfig string
-			LandingProject       string
-			ProjectCustomization bool
-			Extensions           string
-		}
-		Auth struct {
-			SessionExpiration    time.Duration `conf:"default:24h"`
-			EmailTokenExpiration time.Duration `conf:"default:72h"`
-			SecretKey            string        `conf:"default:secret-key,mask"`
-		}
-		Web struct {
-			ReadTimeout     time.Duration `conf:"default:5s"`
-			WriteTimeout    time.Duration `conf:"default:10s"`
-			IdleTimeout     time.Duration `conf:"default:120s"`
-			ShutdownTimeout time.Duration `conf:"default:20s"`
-			SiteURL         string        `conf:"default:http://127.0.0.1"`
-			APIHost         string        `conf:"default:0.0.0.0:3000"`
-		}
-		Postgres struct {
-			User string `conf:"default:postgres"`
-			//Password           string `conf:"default:nexus,mask"`
-			Password string `conf:"default:nexus"` // trec la mask perque es pogui veure el password al arrencar
-			Host     string `conf:"default:localhost"`
-			Name     string `conf:"default:postgres,env:GISQUICK_POSTGRES_DB"`
-			//Name               string `conf:"default:postgres"`
-			Port               int    `conf:"default:5433"`
-			MaxIdleConns       int    `conf:"default:3"`
-			MaxOpenConns       int    `conf:"default:3"`
-			SSLMode            string `conf:"default:disable"`
-			StatementCacheMode string `conf:"default:prepare"`
-		}
-		Redis struct {
-			Network string // "unix"
-			//Addr string `conf:"default:redis:6379"` // "/var/run/redis/redis.sock"
-			Addr string `conf:"localhost:6379"`
-			//Addr string `localhost:6379` // localhost:6379
-
-			Password string `conf:"mask"`
-			DB       int    `conf:"default:0"`
-		}
-		
-	}{}
-
-    cfg := struct {
-		Gisquick struct {
-			//Debug                bool   `conf:"default:false"`
-			Debug        bool   `conf:"default:true"`
-			Language     string `conf:"default:en-us"`
-			ProjectsRoot string `conf:"default:c:/gisquick/publish"`
-			MapCacheRoot string
-			//MapserverURL string `conf:"default:http://localhost:8080/qgis-server"`
-
-			//jfs gisquick windowns
-			MapserverURL string `conf:"default:http://localhost:8080/cgi-bin/qgis_mapserv.fcgi.exe"`
-
-			PluginsURL           string
-			SignupAPI            bool
-			ProjectSizeLimit     ByteSize `conf:"default:-1"`
-			AccountStorageLimit  ByteSize `conf:"default:-1"`
-			AccountProjectsLimit int      `conf:"default:-1"`
-			AccountLimiterConfig string
-			LandingProject       string
-			ProjectCustomization bool
-			Extensions           string
-		}
-		Auth struct {
-			SessionExpiration    time.Duration `conf:"default:24h"`
-			EmailTokenExpiration time.Duration `conf:"default:72h"`
-			SecretKey            string        `conf:"default:secret-key,mask"`
-		}
-		Web struct {
-			ReadTimeout     time.Duration `conf:"default:5s"`
-			WriteTimeout    time.Duration `conf:"default:10s"`
-			IdleTimeout     time.Duration `conf:"default:120s"`
-			ShutdownTimeout time.Duration `conf:"default:20s"`
-			SiteURL         string        `conf:"default:http://127.0.0.1"`
-			APIHost         string        `conf:"default:0.0.0.0:4000"`
-		}
-		Postgres struct {
-			User string `conf:"default:postgres"`
-			//Password           string `conf:"default:nexus,mask"`
-			Password string `conf:"default:nexus"` // trec la mask perque es pogui veure el password al arrencar
-			Host     string `conf:"default:localhost"`
-			//Name     string `conf:"default:postgres,env:GISQUICK_POSTGRES_DB"`
-			//	Name               string `conf:"default:postgres,env:POSTGRES_DB"`
-			Name string `conf:"default:pre,env:POSTGRES_DB"`
-			//Name               string `conf:"default:postgres"`
-			Port               int    `conf:"default:5433"`
-			MaxIdleConns       int    `conf:"default:3"`
-			MaxOpenConns       int    `conf:"default:3"`
-			SSLMode            string `conf:"default:disable"`
-			StatementCacheMode string `conf:"default:prepare"`
-		}
-		Redis struct {
-			Network string // "unix"
-			//Addr string `conf:"default:redis:6379"` // "/var/run/redis/redis.sock"
-			Addr string `conf:"localhost:6379"`
-			//Addr string `localhost:6379` // localhost:6379
-
-			Password string `conf:"mask"`
-			DB       int    `conf:"default:0"`
-		}
+El codi font es troba disponible a:
+https://github.com/SistemesInformacioTerritorial/gisquickserver-qvista.git

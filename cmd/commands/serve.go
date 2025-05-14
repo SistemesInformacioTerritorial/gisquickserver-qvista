@@ -2,7 +2,6 @@ package commands
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -12,7 +11,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/ardanlabs/conf/v2"
 	"github.com/gisquick/gisquick-server/internal/application"
 	"github.com/gisquick/gisquick-server/internal/domain"
 	"github.com/gisquick/gisquick-server/internal/infrastructure/email"
@@ -23,6 +21,7 @@ import (
 	"github.com/gisquick/gisquick-server/internal/server"
 	"github.com/gisquick/gisquick-server/internal/server/auth"
 	"github.com/go-redis/redis/v8"
+	"github.com/spf13/viper"
 	mail "github.com/xhit/go-simple-mail/v2"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -61,112 +60,219 @@ func (b *ByteSize) UnmarshalText(text []byte) error {
 }
 
 func Serve() error {
+	v := viper.New()
 
-	dir, err := os.Getwd()
-	if err != nil {
-		fmt.Println("Error al obtener el directorio actual:", err)
+	// Set default values
+	v.SetDefault("gisquick.debug", true)
+	v.SetDefault("gisquick.language", "en-us")
+	v.SetDefault("gisquick.projectsRoot", "c:/gisquick/publish")
+	v.SetDefault("gisquick.mapserverURL", "http://localhost:8080/cgi-bin/qgis_mapserv.fcgi.exe")
+	v.SetDefault("gisquick.projectSizeLimit", -1)
+	v.SetDefault("gisquick.accountStorageLimit", -1)
+	v.SetDefault("gisquick.accountProjectsLimit", -1)
 
+	v.SetDefault("auth.sessionExpiration", "24h")
+	v.SetDefault("auth.emailTokenExpiration", "72h")
+	v.SetDefault("auth.secretKey", "secret-key")
+
+	v.SetDefault("web.readTimeout", "5s")
+	v.SetDefault("web.writeTimeout", "10s")
+	v.SetDefault("web.idleTimeout", "120s")
+	v.SetDefault("web.shutdownTimeout", "20s")
+	v.SetDefault("web.siteURL", "http://127.0.0.1")
+	v.SetDefault("web.apiHost", "0.0.0.0:3000")
+
+	v.SetDefault("postgres.user", "postgres")
+	v.SetDefault("postgres.password", "nexus")
+	v.SetDefault("postgres.host", "localhost")
+	v.SetDefault("postgres.name", "postgres")
+	v.SetDefault("postgres.port", 5433)
+	v.SetDefault("postgres.maxIdleConns", 3)
+	v.SetDefault("postgres.maxOpenConns", 3)
+	v.SetDefault("postgres.sslMode", "disable")
+	v.SetDefault("postgres.statementCacheMode", "prepare")
+
+	v.SetDefault("redis.addr", "localhost:6379")
+	v.SetDefault("redis.password", "")
+	v.SetDefault("redis.db", 0)
+
+	v.SetDefault("email.host", "smtp.office365.com")
+	v.SetDefault("email.port", 587)
+	v.SetDefault("email.encryption", "STARTTLS")
+	v.SetDefault("email.username", "auth.smtp@nexusgeographics.com")
+	v.SetDefault("email.password", "9D1av%JcRVh")
+	v.SetDefault("email.sender", "auth.smtp@nexusgeographics.com")
+	v.SetDefault("email.activationSubject", "Gisquick Registration")
+	v.SetDefault("email.passwordResetSubject", "Gisquick Password Reset")
+
+	// Configure file search
+	configFile := os.Getenv("GISQUICK_CONFIG")
+	if configFile != "" {
+		v.SetConfigFile(configFile)
+	} else {
+		v.SetConfigName("config")
+		v.SetConfigType("yaml")
+		v.AddConfigPath(".")
+		v.AddConfigPath("./config")
+		v.AddConfigPath("/etc/gisquick")
 	}
 
-	fmt.Println("Directorio actual:", dir)
+	// Configure environment variables
+	v.SetEnvPrefix("GISQUICK")
+	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
+	v.AutomaticEnv()
 
+	// Attempt to read configuration file
+	if err := v.ReadInConfig(); err != nil {
+		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
+			return fmt.Errorf("error reading configuration file: %w", err)
+		}
+	}
+
+	// Create configuration structure
 	cfg := struct {
 		Gisquick struct {
-			//Debug                bool   `conf:"default:false"`
-			Debug        bool   `conf:"default:true"`
-			Language     string `conf:"default:en-us"`
-			ProjectsRoot string `conf:"default:c:/gisquick/publish"`
-			MapCacheRoot string
-			//MapserverURL string `conf:"default:http://localhost:8080/qgis-server"`
-
-			//jfs gisquick windowns
-			MapserverURL string `conf:"default:http://localhost:8080/cgi-bin/qgis_mapserv.fcgi.exe"`
-
+			Debug                bool
+			Language             string
+			ProjectsRoot         string
+			MapCacheRoot         string
+			MapserverURL         string
 			PluginsURL           string
 			SignupAPI            bool
-			ProjectSizeLimit     ByteSize `conf:"default:-1"`
-			AccountStorageLimit  ByteSize `conf:"default:-1"`
-			AccountProjectsLimit int      `conf:"default:-1"`
+			ProjectSizeLimit     ByteSize
+			AccountStorageLimit  ByteSize
+			AccountProjectsLimit int
 			AccountLimiterConfig string
 			LandingProject       string
 			ProjectCustomization bool
 			Extensions           string
 		}
 		Auth struct {
-			SessionExpiration    time.Duration `conf:"default:24h"`
-			EmailTokenExpiration time.Duration `conf:"default:72h"`
-			SecretKey            string        `conf:"default:secret-key,mask"`
+			SessionExpiration    time.Duration
+			EmailTokenExpiration time.Duration
+			SecretKey            string
 		}
 		Web struct {
-			ReadTimeout     time.Duration `conf:"default:5s"`
-			WriteTimeout    time.Duration `conf:"default:10s"`
-			IdleTimeout     time.Duration `conf:"default:120s"`
-			ShutdownTimeout time.Duration `conf:"default:20s"`
-			SiteURL         string        `conf:"default:http://127.0.0.1"`
-			APIHost         string        `conf:"default:0.0.0.0:3000"`
+			ReadTimeout     time.Duration
+			WriteTimeout    time.Duration
+			IdleTimeout     time.Duration
+			ShutdownTimeout time.Duration
+			SiteURL         string
+			APIHost         string
 		}
 		Postgres struct {
-			User string `conf:"default:postgres"`
-			//Password           string `conf:"default:nexus,mask"`
-			Password string `conf:"default:nexus"` // trec la mask perque es pogui veure el password al arrencar
-			Host     string `conf:"default:localhost"`
-			Name     string `conf:"default:postgres,env:GISQUICK_POSTGRES_DB"`
-			//Name               string `conf:"default:postgres"`
-			Port               int    `conf:"default:5433"`
-			MaxIdleConns       int    `conf:"default:3"`
-			MaxOpenConns       int    `conf:"default:3"`
-			SSLMode            string `conf:"default:disable"`
-			StatementCacheMode string `conf:"default:prepare"`
+			User               string
+			Password           string
+			Host               string
+			Name               string
+			Port               int
+			MaxIdleConns       int
+			MaxOpenConns       int
+			SSLMode            string
+			StatementCacheMode string
 		}
 		Redis struct {
-			Network string // "unix"
-			//Addr string `conf:"default:redis:6379"` // "/var/run/redis/redis.sock"
-			Addr string `conf:"localhost:6379"`
-			//Addr string `localhost:6379` // localhost:6379
-
-			Password string `conf:"mask"`
-			DB       int    `conf:"default:0"`
+			Network  string
+			Addr     string
+			Password string
+			DB       int
 		}
 		Email struct {
-			Host                 string `conf:"default:smtp.office365.com"`
-			Port                 int    `conf:"default:587"`
-			Encryption           string `conf:"default:STARTTLS,help: Options [None|SSL|TLS|SSLTLS|STARTTLS]"`
-			Username             string `conf:"default:auth.smtp@nexusgeographics.com"`
-			Password             string `conf:"9D1av%JcRVh"`
-			Sender               string `conf:"default:auth.smtp@nexusgeographics.com"`
-			ActivationSubject    string `conf:"default:Gisquick Registration"`
-			PasswordResetSubject string `conf:"default:Gisquick Password Reset"`
+			Host                 string
+			Port                 int
+			Encryption           string
+			Username             string
+			Password             string
+			Sender               string
+			ActivationSubject    string
+			PasswordResetSubject string
 		}
 	}{}
 
-	// const prefix = "GISQUICK"
-	const prefix = ""
-	help, err := conf.Parse(prefix, &cfg)
-	if err != nil {
-		if errors.Is(err, conf.ErrHelpWanted) {
-			fmt.Println(help)
-			return nil
-		}
-		return fmt.Errorf("parsing config: %w", err)
-	}
-	//logLevel := zap.InfoLevel
-	logLevel := zap.DebugLevel
-	cfg.Gisquick.Debug = true
+	// Map Viper configuration to structure
+	cfg.Gisquick.Debug = v.GetBool("gisquick.debug")
+	cfg.Gisquick.Language = v.GetString("gisquick.language")
+	cfg.Gisquick.ProjectsRoot = v.GetString("gisquick.projectsRoot")
+	cfg.Gisquick.MapCacheRoot = v.GetString("gisquick.mapCacheRoot")
+	cfg.Gisquick.MapserverURL = v.GetString("gisquick.mapserverURL")
+	cfg.Gisquick.PluginsURL = v.GetString("gisquick.pluginsURL")
+	cfg.Gisquick.SignupAPI = v.GetBool("gisquick.signupAPI")
 
-	if cfg.Gisquick.Debug {
-		logLevel = zap.DebugLevel
+	if psl := v.GetString("gisquick.projectSizeLimit"); psl != "" {
+		var bs ByteSize
+		if err := bs.Set(psl); err != nil {
+			return fmt.Errorf("invalid projectSizeLimit: %w", err)
+		}
+		cfg.Gisquick.ProjectSizeLimit = bs
 	}
+
+	if asl := v.GetString("gisquick.accountStorageLimit"); asl != "" {
+		var bs ByteSize
+		if err := bs.Set(asl); err != nil {
+			return fmt.Errorf("invalid accountStorageLimit: %w", err)
+		}
+		cfg.Gisquick.AccountStorageLimit = bs
+	}
+
+	cfg.Gisquick.AccountProjectsLimit = v.GetInt("gisquick.accountProjectsLimit")
+	cfg.Gisquick.AccountLimiterConfig = v.GetString("gisquick.accountLimiterConfig")
+	cfg.Gisquick.LandingProject = v.GetString("gisquick.landingProject")
+	cfg.Gisquick.ProjectCustomization = v.GetBool("gisquick.projectCustomization")
+	cfg.Gisquick.Extensions = v.GetString("gisquick.extensions")
+
+	cfg.Auth.SessionExpiration = v.GetDuration("auth.sessionExpiration")
+	cfg.Auth.EmailTokenExpiration = v.GetDuration("auth.emailTokenExpiration")
+	cfg.Auth.SecretKey = v.GetString("auth.secretKey")
+
+	cfg.Web.ReadTimeout = v.GetDuration("web.readTimeout")
+	cfg.Web.WriteTimeout = v.GetDuration("web.writeTimeout")
+	cfg.Web.IdleTimeout = v.GetDuration("web.idleTimeout")
+	cfg.Web.ShutdownTimeout = v.GetDuration("web.shutdownTimeout")
+	cfg.Web.SiteURL = v.GetString("web.siteURL")
+	cfg.Web.APIHost = v.GetString("web.apiHost")
+
+	cfg.Postgres.User = v.GetString("postgres.user")
+	cfg.Postgres.Password = v.GetString("postgres.password")
+	cfg.Postgres.Host = v.GetString("postgres.host")
+	cfg.Postgres.Name = v.GetString("postgres.name")
+	cfg.Postgres.Port = v.GetInt("postgres.port")
+	cfg.Postgres.MaxIdleConns = v.GetInt("postgres.maxIdleConns")
+	cfg.Postgres.MaxOpenConns = v.GetInt("postgres.maxOpenConns")
+	cfg.Postgres.SSLMode = v.GetString("postgres.sslMode")
+	cfg.Postgres.StatementCacheMode = v.GetString("postgres.statementCacheMode")
+
+	cfg.Redis.Network = v.GetString("redis.network")
+	cfg.Redis.Addr = v.GetString("redis.addr")
+	cfg.Redis.Password = v.GetString("redis.password")
+	cfg.Redis.DB = v.GetInt("redis.db")
+
+	cfg.Email.Host = v.GetString("email.host")
+	cfg.Email.Port = v.GetInt("email.port")
+	cfg.Email.Encryption = v.GetString("email.encryption")
+	cfg.Email.Username = v.GetString("email.username")
+	cfg.Email.Password = v.GetString("email.password")
+	cfg.Email.Sender = v.GetString("email.sender")
+	cfg.Email.ActivationSubject = v.GetString("email.activationSubject")
+	cfg.Email.PasswordResetSubject = v.GetString("email.passwordResetSubject")
+
+	logLevel := zap.DebugLevel
+	if !cfg.Gisquick.Debug {
+		logLevel = zap.InfoLevel
+	}
+
 	log, err := createLogger(logLevel)
 	if err != nil {
 		return fmt.Errorf("failed to create logger: %w", err)
 	}
+	defer log.Sync()
 
-	out, err := conf.String(&cfg)
-	if err != nil {
-		return fmt.Errorf("generating config for output: %w", err)
-	}
-	// fmt.Println(out)
-	log.Infow("startup", "config", out)
+	log.Infow("startup",
+		"config_file", v.ConfigFileUsed(),
+		"debug", cfg.Gisquick.Debug,
+		"projects_root", cfg.Gisquick.ProjectsRoot,
+		"mapserver_url", cfg.Gisquick.MapserverURL,
+		"site_url", cfg.Web.SiteURL,
+		"api_host", cfg.Web.APIHost)
 
 	// Database
 	dbConn, err := server.OpenDB(server.DBConfig{
@@ -188,7 +294,6 @@ func Serve() error {
 		dbConn.Close()
 	}()
 
-	// for unix socket, use Network: "unix" and Addr: "/var/run/redis/redis.sock"
 	rdb := redis.NewClient(&redis.Options{
 		Addr:     cfg.Redis.Addr,
 		Network:  cfg.Redis.Network,
@@ -234,7 +339,6 @@ func Serve() error {
 		ProjectCustomization: cfg.Gisquick.ProjectCustomization,
 	}
 
-	// Services
 	accountsRepo := postgres.NewAccountsRepository(dbConn)
 	tokenGenerator := security.NewTokenGenerator(cfg.Auth.SecretKey, "signup", cfg.Auth.EmailTokenExpiration)
 	emailSender := email.NewAccountsEmailSender(
@@ -275,14 +379,11 @@ func Serve() error {
 		}
 	}
 
-	// Start server
 	go func() {
 		if err := s.ListenAndServe(cfg.Web.APIHost); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("shutting down the server: %v", err)
 		}
 	}()
-	// Wait for interrupt signal to gracefully shutdown the server with a timeout of 10 seconds.
-	// Use a buffered channel to avoid missing signals as recommended for signal.Notify
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, os.Interrupt, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
@@ -297,7 +398,6 @@ func Serve() error {
 }
 
 func createLogger(level zapcore.Level) (*zap.SugaredLogger, error) {
-	//config := zap.NewProductionConfig()
 	config := zap.NewDevelopmentConfig()
 
 	config.OutputPaths = []string{"stdout"}
