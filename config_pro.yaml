@@ -1,0 +1,32 @@
+# Configuració de QVistaWeb - Entorn de PRODUCCIÓ
+
+gisquick:
+  debug: false
+  language: ca-es
+  projectsRoot: c:/gisquick/publish
+  mapserverURL: http://localhost:8080/cgi-bin/qgis_mapserv.fcgi.exe
+  projectSizeLimit: 200M
+  accountStorageLimit: 2G
+
+auth:
+  sessionExpiration: 24h
+  secretKey: clau-secreta-produccio-canviar-en-produccio
+
+web:
+  readTimeout: 5s
+  writeTimeout: 10s
+  idleTimeout: 120s
+  shutdownTimeout: 20s
+  siteURL: http://127.0.0.1
+  apiHost: 0.0.0.0:3000
+
+postgres:
+  user: postgres
+  password: nexus
+  host: localhost
+  name: postgres
+  port: 5433
+
+redis:
+  addr: localhost:6379
+  db: 0  # Cada entorn utilitza una BD Redis diferent

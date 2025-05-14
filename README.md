@@ -67,7 +67,7 @@ web:
 
 postgres:
   user: postgres
-  password: nexus
+  password: ********
   host: localhost
   name: postgres
   port: 5433

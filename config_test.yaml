@@ -1,0 +1,51 @@
+# Configuració de Gisquick Server
+
+gisquick:
+  debug: true
+  language: es-es
+  projectsRoot: c:/gisquick/XXXXX
+  mapserverURL: http://localhost:8090/cgi-bin/qgis_mapserv.fcgi.exe
+  projectSizeLimit: 100M
+  accountStorageLimit: 1G
+  accountProjectsLimit: 10
+  projectCustomization: true
+
+auth:
+  sessionExpiration: 24h
+  emailTokenExpiration: 72h
+  secretKey: tu-clave-secreta-personalizada
+
+web:
+  readTimeout: 5s
+  writeTimeout: 10s
+  idleTimeout: 120s
+  shutdownTimeout: 20s
+  siteURL: http://127.0.0.1
+  apiHost: 0.0.0.0:4000
+
+postgres:
+  user: postgres
+  password: secret
+  host: localhost
+  name: postgres
+  port: 5433
+  maxIdleConns: 3
+  maxOpenConns: 3
+  sslMode: disable
+  statementCacheMode: prepare
+
+redis:
+  network: tcp
+  addr: localhost:6379
+  password: ""
+  db: 0
+
+email:
+  host: smtp.office365.com
+  port: 587
+  encryption: STARTTLS
+  username: auth.smtp@nexusgeographics.com
+  password: 9D1av%JcRVh
+  sender: auth.smtp@nexusgeographics.com
+  activationSubject: Gisquick Registration
+  passwordResetSubject: Gisquick Password Reset

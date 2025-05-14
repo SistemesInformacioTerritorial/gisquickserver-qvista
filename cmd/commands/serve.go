@@ -59,6 +59,50 @@ func (b *ByteSize) UnmarshalText(text []byte) error {
 	return b.Set(string(text))
 }
 
+// Funció per comprovar i mostrar canvis respecte als valors per defecte
+func checkConfigChanges(log *zap.SugaredLogger, v *viper.Viper) {
+	// Mapa de valors per defecte (copiat de les definicions d'abans)
+	defaults := map[string]interface{}{
+		"gisquick.debug":            true,
+		"gisquick.language":         "en-us",
+		"gisquick.projectsRoot":     "c:/gisquick/publish",
+		"gisquick.mapserverURL":     "http://localhost:8080/cgi-bin/qgis_mapserv.fcgi.exe",
+		"auth.sessionExpiration":    "24h",
+		"auth.emailTokenExpiration": "72h",
+		"auth.secretKey":            "secret-key",
+		"web.siteURL":               "http://127.0.0.1",
+		"web.apiHost":               "0.0.0.0:3000",
+		"postgres.user":             "postgres",
+		"postgres.password":         "nexus",
+		"postgres.host":             "localhost",
+		"postgres.name":             "postgres",
+		"postgres.port":             5433,
+		"redis.addr":                "localhost:6379",
+		"email.host":                "smtp.office365.com",
+		"email.port":                587,
+		"email.username":            "auth.smtp@nexusgeographics.com",
+		"email.encryption":          "STARTTLS",
+	}
+
+	// Comprova cada clau
+	for key, defaultValue := range defaults {
+		if v.IsSet(key) {
+			currentValue := v.Get(key)
+
+			// Convertir a string per comparar
+			defaultStr := fmt.Sprintf("%v", defaultValue)
+			currentStr := fmt.Sprintf("%v", currentValue)
+
+			if defaultStr != currentStr {
+				log.Infow("configuració per defecte canviada",
+					"paràmetre", key,
+					"valor_per_defecte", defaultStr,
+					"valor_actual", currentStr)
+			}
+		}
+	}
+}
+
 func Serve() error {
 	v := viper.New()
 
@@ -273,6 +317,9 @@ func Serve() error {
 		"mapserver_url", cfg.Gisquick.MapserverURL,
 		"site_url", cfg.Web.SiteURL,
 		"api_host", cfg.Web.APIHost)
+
+	// Comprovar i mostrar configuracions modificades
+	checkConfigChanges(log, v)
 
 	// Database
 	dbConn, err := server.OpenDB(server.DBConfig{
