@@ -1,0 +1,77 @@
+From e6869bdc954628f464d4265b698184ea31115a1f Mon Sep 17 00:00:00 2001
+From: "NEXUS\\jfontan" <jfontan@nexusgeographics.com>
+Date: Tue, 8 Apr 2025 10:07:22 +0200
+Subject: [PATCH] Extraure variables de capa cap al front end
+
+---
+ internal/application/projects.go | 54 +++++++++++++++++++++++++++++++-
+ 1 file changed, 53 insertions(+), 1 deletion(-)
+
+diff --git a/internal/application/projects.go b/internal/application/projects.go
+index 88bd307..654cb26 100644
+--- a/internal/application/projects.go
++++ b/internal/application/projects.go
+@@ -849,7 +849,59 @@ func (s *projectService) GetMapConfig(projectName string, user domain.User) (map
+ 	//data["ows_url"] = fmt.Sprintf("/api/map/ows/%s", filepath.ToSlash(projectName))
+ 	//data["ows_project"] = filepath.ToSlash(projectName)
+ 
+-	s.log.Infow("GetMapConfig", "projectName", projectName, "ows_url", data["ows_url"], "ows_project", data["ows_project"])
++	// Corrección: usar s.repo en lugar de s.storage
++	var qgisMetaObj map[string]interface{}
++	if err := s.repo.ParseQgisMetadata(projectName, &qgisMetaObj); err != nil {
++		s.log.Errorw("[GetMapConfig] loading QGIS metadata", "project", projectName, zap.Error(err))
++		return nil, fmt.Errorf("loading project metadata: %w", err)
++	}
++
++	// 3. Extraer y preparar variables de capa para el frontend
++	layerVariables := make(map[string]interface{})
++
++	// Los metadatos ya están parseados, podemos usarlos directamente
++	// Verificar primero si hay un mapa de capas
++	if layersMetadata, ok := qgisMetaObj["layers"]; ok {
++		// Puede ser un mapa de ID -> datos
++		if layersMap, isMap := layersMetadata.(map[string]interface{}); isMap {
++			for layerId, layerData := range layersMap {
++				if layerObj, isLayerMap := layerData.(map[string]interface{}); isLayerMap {
++					if vars, hasVars := layerObj["variables"].(map[string]interface{}); hasVars && len(vars) > 0 {
++						layerVariables[layerId] = vars
++					}
++				}
++			}
++		} else if layersArray, isArray := layersMetadata.([]interface{}); isArray {
++			// O puede ser un array de capas
++			for _, layer := range layersArray {
++				if layerObj, isMap := layer.(map[string]interface{}); isMap {
++					layerId, hasId := layerObj["id"].(string)
++					if !hasId {
++						// Intentar con el campo name si id no existe
++						layerId, hasId = layerObj["name"].(string)
++						if !hasId {
++							continue
++						}
++					}
++
++					// Buscar variables dentro de la capa
++					if vars, hasVars := layerObj["variables"].(map[string]interface{}); hasVars && len(vars) > 0 {
++						layerVariables[layerId] = vars
++					}
++				}
++			}
++		}
++	}
++
++	// 4. Solo añadir variables de capa al resultado si encontramos alguna
++	if len(layerVariables) > 0 {
++		data["layer_variables"] = layerVariables
++		s.log.Infow("[GetMapConfig] variables de capa encontradas",
++			"project", projectName,
++			"count", len(layerVariables))
++	}
++
++	s.log.Infow("GetMapConfig", "projectName", projectName, "ows_url", data["ows_url"], "layer_variables", layerVariables)
+ 
+ 	topics := make([]domain.Topic, 0)
+ 
+-- 
+2.43.0.windows.1
+
