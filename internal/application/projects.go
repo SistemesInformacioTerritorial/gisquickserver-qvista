@@ -839,6 +839,21 @@ func (s *projectService) GetMapConfig(projectName string, user domain.User) (map
 	data["ows_url"] = fmt.Sprintf("/api/map/ows/%s", projectName)
 	data["ows_project"] = projectName
 
+	// NUEVA FUNCIONALIDAD: Integrar variables de capa en cada capa
+	s.log.Infow("[GetMapConfig] Iniciando extracción de variables", "project", projectName)
+	layerVariables := s.extractLayerVariables(projectName)
+	s.log.Infow("[GetMapConfig] Variables extraídas", "project", projectName, "count", len(layerVariables), "variables", layerVariables)
+
+	if len(layerVariables) > 0 {
+		// Integrar variables directamente en cada capa
+		s.log.Infow("[GetMapConfig] Integrando variables en capas", "project", projectName)
+		s.integrateVariablesIntoLayers(layers, layerVariables, meta.Layers)
+		s.integrateVariablesIntoLayers(baseLayersData, layerVariables, meta.Layers)
+		s.log.Infow("[GetMapConfig] Variables integradas en capas", "project", projectName)
+	} else {
+		s.log.Warnw("[GetMapConfig] No se encontraron variables de capa", "project", projectName)
+	}
+
 	// Corrección: usar s.repo en lugar de s.storage
 	var qgisMetaObj map[string]interface{}
 	if err := s.repo.ParseQgisMetadata(projectName, &qgisMetaObj); err != nil {
@@ -847,7 +862,7 @@ func (s *projectService) GetMapConfig(projectName string, user domain.User) (map
 	}
 
 	// 3. Extraer y preparar variables de capa para el frontend
-	layerVariables := make(map[string]interface{})
+	layerVariables = make(map[string]interface{})
 
 	// Los metadatos ya están parseados, podemos usarlos directamente
 	// Verificar primero si hay un mapa de capas
@@ -966,4 +981,160 @@ func (s *projectService) AccessibleProjects(username string, skipErrors bool) ([
 
 func (s *projectService) Close() {
 	s.repo.Close()
+}
+
+// extractLayerVariables extrae las variables de capa del archivo QGIS
+func (s *projectService) extractLayerVariables(projectName string) map[string]interface{} {
+	layerVariables := make(map[string]interface{})
+
+	s.log.Infow("[extractLayerVariables] Iniciando extracción", "project", projectName)
+
+	// Parsear los metadatos QGIS completos como un mapa genérico
+	var qgisMetaObj map[string]interface{}
+	if err := s.repo.ParseQgisMetadata(projectName, &qgisMetaObj); err != nil {
+		s.log.Errorw("[extractLayerVariables] Error parsing metadata", "project", projectName, "error", err)
+		return layerVariables
+	}
+
+	s.log.Infow("[extractLayerVariables] Metadata parseado correctamente", "project", projectName)
+
+	// Debug: mostrar estructura del metadata
+	if layers, ok := qgisMetaObj["layers"]; ok {
+		s.log.Infow("[extractLayerVariables] Encontrada sección layers en metadata", "project", projectName, "type", fmt.Sprintf("%T", layers))
+	} else {
+		s.log.Warnw("[extractLayerVariables] No se encontró sección 'layers' en metadata", "project", projectName)
+		// Mostrar las claves disponibles
+		keys := make([]string, 0, len(qgisMetaObj))
+		for k := range qgisMetaObj {
+			keys = append(keys, k)
+		}
+		s.log.Infow("[extractLayerVariables] Claves disponibles en metadata", "project", projectName, "keys", keys)
+		return layerVariables
+	}
+
+	// Buscar variables en los metadatos de las capas
+	if layersMetadata, ok := qgisMetaObj["layers"]; ok {
+		// Caso 1: Las capas están en un mapa con ID como clave
+		if layersMap, isMap := layersMetadata.(map[string]interface{}); isMap {
+			s.log.Infow("[extractLayerVariables] Procesando layers como mapa", "project", projectName, "count", len(layersMap))
+			for layerId, layerData := range layersMap {
+				s.log.Infow("[extractLayerVariables] Procesando layer", "project", projectName, "layerId", layerId, "type", fmt.Sprintf("%T", layerData))
+				if layerObj, isLayerMap := layerData.(map[string]interface{}); isLayerMap {
+					// Mostrar las claves disponibles en la capa
+					layerKeys := make([]string, 0, len(layerObj))
+					for k := range layerObj {
+						layerKeys = append(layerKeys, k)
+					}
+					s.log.Infow("[extractLayerVariables] Claves en layer", "project", projectName, "layerId", layerId, "keys", layerKeys)
+
+					if vars, hasVars := layerObj["variables"].(map[string]interface{}); hasVars && len(vars) > 0 {
+						layerVariables[layerId] = vars
+						s.log.Infow("[extractLayerVariables] Variables encontradas en layer (mapa)",
+							"project", projectName,
+							"layerId", layerId,
+							"variables", vars)
+					} else {
+						s.log.Infow("[extractLayerVariables] No se encontraron variables en layer", "project", projectName, "layerId", layerId)
+					}
+				} else {
+					s.log.Warnw("[extractLayerVariables] Layer data no es un mapa", "project", projectName, "layerId", layerId, "type", fmt.Sprintf("%T", layerData))
+				}
+			}
+		} else if layersArray, isArray := layersMetadata.([]interface{}); isArray {
+			s.log.Infow("[extractLayerVariables] Procesando layers como array", "project", projectName, "count", len(layersArray))
+			// Caso 2: Las capas están en un array
+			for i, layer := range layersArray {
+				s.log.Infow("[extractLayerVariables] Procesando layer array", "project", projectName, "index", i, "type", fmt.Sprintf("%T", layer))
+				if layerObj, isMap := layer.(map[string]interface{}); isMap {
+					// Mostrar las claves disponibles en la capa
+					layerKeys := make([]string, 0, len(layerObj))
+					for k := range layerObj {
+						layerKeys = append(layerKeys, k)
+					}
+					s.log.Infow("[extractLayerVariables] Claves en layer array", "project", projectName, "index", i, "keys", layerKeys)
+
+					layerId, hasId := layerObj["id"].(string)
+					if !hasId {
+						// Intentar con el campo name si id no existe
+						layerId, hasId = layerObj["name"].(string)
+						if !hasId {
+							s.log.Warnw("[extractLayerVariables] Layer sin ID ni name", "project", projectName, "index", i)
+							continue
+						}
+					}
+					s.log.Infow("[extractLayerVariables] Layer ID encontrado", "project", projectName, "layerId", layerId)
+
+					if vars, hasVars := layerObj["variables"].(map[string]interface{}); hasVars && len(vars) > 0 {
+						layerVariables[layerId] = vars
+						s.log.Infow("[extractLayerVariables] Variables encontradas en layer (array)",
+							"project", projectName,
+							"layerId", layerId,
+							"variables", vars)
+					} else {
+						s.log.Infow("[extractLayerVariables] No se encontraron variables en layer array", "project", projectName, "layerId", layerId)
+					}
+				} else {
+					s.log.Warnw("[extractLayerVariables] Layer array item no es un mapa", "project", projectName, "index", i, "type", fmt.Sprintf("%T", layer))
+				}
+			}
+		} else {
+			s.log.Warnw("[extractLayerVariables] Layers metadata no es ni mapa ni array", "project", projectName, "type", fmt.Sprintf("%T", layersMetadata))
+		}
+	}
+
+	s.log.Infow("[extractLayerVariables] Extracción completada", "project", projectName, "totalVariables", len(layerVariables))
+	return layerVariables
+}
+
+// integrateVariablesIntoLayers integra las variables directamente en cada capa
+func (s *projectService) integrateVariablesIntoLayers(layersData []any, layerVariables map[string]interface{}, metaLayers map[string]domain.LayerMeta) {
+	s.log.Infow("[integrateVariablesIntoLayers] Iniciando integración", "layersCount", len(layersData), "variablesCount", len(layerVariables))
+
+	for i, layerObj := range layersData {
+		s.log.Infow("[integrateVariablesIntoLayers] Procesando item", "index", i, "type", fmt.Sprintf("%T", layerObj))
+		switch layer := layerObj.(type) {
+		case map[string]interface{}:
+			// Si es una capa individual
+			if layerName, ok := layer["name"].(string); ok {
+				s.log.Infow("[integrateVariablesIntoLayers] Procesando capa", "index", i, "layerName", layerName)
+
+				// Buscar el ID de la capa basándose en el nombre
+				var layerId string
+				for id, metaLayer := range metaLayers {
+					if metaLayer.Name == layerName {
+						layerId = id
+						s.log.Infow("[integrateVariablesIntoLayers] Layer ID encontrado", "layerName", layerName, "layerId", layerId)
+						break
+					}
+				}
+
+				// Si encontramos el ID y tiene variables, integrarlas directamente
+				if layerId != "" {
+					if vars, hasVars := layerVariables[layerId].(map[string]interface{}); hasVars {
+						s.log.Infow("[integrateVariablesIntoLayers] Integrando variables", "layerName", layerName, "layerId", layerId, "variables", vars)
+						for varName, varValue := range vars {
+							layer[varName] = varValue
+							s.log.Infow("[integrateVariablesIntoLayers] Variable integrada", "layerName", layerName, "varName", varName, "varValue", varValue)
+						}
+					} else {
+						s.log.Infow("[integrateVariablesIntoLayers] No hay variables para esta capa", "layerName", layerName, "layerId", layerId)
+					}
+				} else {
+					s.log.Warnw("[integrateVariablesIntoLayers] No se encontró ID para la capa", "layerName", layerName)
+				}
+			} else {
+				s.log.Infow("[integrateVariablesIntoLayers] Item sin nombre de capa", "index", i)
+			}
+
+			// Si es un grupo, procesar recursivamente
+			if nestedLayers, ok := layer["layers"].([]any); ok {
+				s.log.Infow("[integrateVariablesIntoLayers] Procesando grupo recursivamente", "index", i, "nestedCount", len(nestedLayers))
+				s.integrateVariablesIntoLayers(nestedLayers, layerVariables, metaLayers)
+			}
+		default:
+			s.log.Warnw("[integrateVariablesIntoLayers] Item no es un mapa", "index", i, "type", fmt.Sprintf("%T", layerObj))
+		}
+	}
+
+	s.log.Infow("[integrateVariablesIntoLayers] Integración completada")
 }
