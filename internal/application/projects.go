@@ -143,6 +143,27 @@ func (s *projectService) GetUserProjects(username string) ([]domain.ProjectInfo,
 
 }
 
+func (s *projectService) AccessibleProjects(username string, skipErrors bool) ([]domain.ProjectInfo, error) {
+	projects, err := s.repo.UserProjects(username)
+	if err != nil {
+		return nil, fmt.Errorf("getting user's projects: %w", err)
+	}
+
+	data := make([]domain.ProjectInfo, 0, len(projects))
+	for _, name := range projects {
+		info, err := s.repo.GetProjectInfo(name)
+		if err != nil {
+			if skipErrors {
+				s.log.Warnw("Skipping project with error", "project", name, "error", err)
+				continue
+			}
+			return nil, fmt.Errorf("getting project info for %s: %w", name, err)
+		}
+		data = append(data, info)
+	}
+	return data, nil
+}
+
 func (s *projectService) SaveFile(projectName, directory, pattern string, r io.Reader, size int64) (domain.ProjectFile, error) {
 	username := strings.Split(projectName, "/")[0]
 	accountConfig, err := s.limiter.GetAccountLimits(username)
@@ -647,9 +668,6 @@ func (s *projectService) GetMapConfig(projectName string, user domain.User) (map
 	layers, err := TransformLayersTree(
 		overlays,
 		func(id string) bool {
-			// drawingOrder := indexOf(meta.LayersOrder, id)
-			// return !settings.Layers[id].Flags.Has("excluded") && rolesPerms.LayerFlags(id).Has("view")
-			// return drawingOrder != -1 && !settings.Layers[id].Flags.Has("excluded") && (rolesPerms == nil || rolesPerms.LayerFlags(id).Has("view"))
 			return !settings.Layers[id].Flags.Has("excluded") && (rolesPerms == nil || rolesPerms.LayerFlags(id).Has("view"))
 		},
 		func(id string) interface{} {
@@ -708,12 +726,7 @@ func (s *projectService) GetMapConfig(projectName string, user domain.User) (map
 				Queryable: queryable,
 				InfoPanel: lset.InfoPanelComponent,
 			}
-			// if !lset.Flags.Has("render_off") {
-			// 	drawingOrder := indexOf(meta.LayersOrder, id)
-			// 	ldata.DrawingOrder = &drawingOrder
-			// } else {
-			// 	ldata.Visible = false
-			// }
+
 			drawingOrder := -1
 			if !lset.Flags.Has("render_off") {
 				drawingOrder = indexOf(meta.LayersOrder, id)
@@ -744,18 +757,7 @@ func (s *projectService) GetMapConfig(projectName string, user domain.User) (map
 					ldata.Permissions.Update = ldata.Permissions.Update && lperms.Has("update")
 				}
 
-				// ldata.Attributes[0].Constrains
 				if queryable && len(lmeta.Attributes) > 0 {
-
-					// if len(lset.Attributes) > 0 {
-					// 	for _, a := range lmeta.Attributes {
-					// 		as, ok := lset.Attributes[a.Name]
-					// 		if ok {
-					// 			s.log.Infow("attribute", "layer", lmeta.Title, "name", a.Name, "settings", as, "config nill", as.Config == nil)
-					// 		}
-					// 	}
-					// }
-
 					if lset.Flags.Has("export") {
 						ldata.ExportFields = lset.ExportFields
 					}
@@ -803,8 +805,8 @@ func (s *projectService) GetMapConfig(projectName string, user domain.User) (map
 	if err != nil {
 		return nil, err
 	}
+
 	data := make(map[string]interface{})
-	// data["authentication"] = settings.Authentication
 	data["use_mapcache"] = settings.MapCache
 	data["zoom_extent"] = settings.InitialExtent
 	data["project_extent"] = settings.Extent
@@ -816,7 +818,8 @@ func (s *projectService) GetMapConfig(projectName string, user domain.User) (map
 	data["projection"] = meta.Projection
 	data["projections"] = meta.Projections
 	data["units"] = meta.Units
-	data["print_composers"] = meta.ComposerTemplates // TODO: filter by permissions
+	data["print_composers"] = meta.ComposerTemplates
+
 	if len(settings.Formatters) > 0 {
 		data["formatters"] = settings.Formatters
 	}
@@ -827,20 +830,25 @@ func (s *projectService) GetMapConfig(projectName string, user domain.User) (map
 	} else {
 		data["scripts"] = scripts
 	}
+
 	if settings.Title != "" {
 		data["title"] = settings.Title
 	} else {
 		data["title"] = meta.Title
 	}
-	// temporary backward compatibility
 	data["root_title"] = data["title"]
-
 	data["name"] = projectName
 	data["ows_url"] = fmt.Sprintf("/api/map/ows/%s", projectName)
 	data["ows_project"] = projectName
 
-	topics := make([]domain.Topic, 0)
+	// EXTRAER VARIABLES DE CAPA DEL ARCHIVO QGS/QGZ
+	layerVariables := s.extractLayerVariables(projectName, meta.Layers)
+	if len(layerVariables) > 0 {
+		s.integrateVariablesIntoLayers(layers, layerVariables, meta.Layers)
+		s.integrateVariablesIntoLayers(baseLayersData, layerVariables, meta.Layers)
+	}
 
+	topics := make([]domain.Topic, 0)
 	var visibleTopics []string
 	if rolesPerms != nil {
 		visibleTopics = rolesPerms.UserTopics()
@@ -849,23 +857,23 @@ func (s *projectService) GetMapConfig(projectName string, user domain.User) (map
 		if visibleTopics != nil && !contains(visibleTopics, topic.ID) {
 			continue
 		}
-		layers := make([]string, 0)
+		topicLayers := make([]string, 0)
 		for _, lid := range topic.Layers {
 			lset := settings.Layers[lid]
-
 			visible := !lset.Flags.Has("excluded") && !lset.Flags.Has("hidden")
 			if visible && rolesPerms != nil {
 				visible = rolesPerms.LayerFlags(lid).Has("view")
 			}
 			if visible {
-				layers = append(layers, meta.Layers[lid].Name)
+				topicLayers = append(topicLayers, meta.Layers[lid].Name)
 			}
 		}
-		if len(layers) > 0 {
-			topics = append(topics, domain.Topic{Title: topic.Title, Abstract: topic.Abstract, Layers: layers})
+		if len(topicLayers) > 0 {
+			topics = append(topics, domain.Topic{Title: topic.Title, Abstract: topic.Abstract, Layers: topicLayers})
 		}
 	}
 	data["topics"] = topics
+
 	if settings.Geocoding != nil || settings.SearchByLocation {
 		search := SearchConfig{SearchByLocation: settings.SearchByLocation}
 		if settings.Geocoding != nil {
@@ -873,42 +881,129 @@ func (s *projectService) GetMapConfig(projectName string, user domain.User) (map
 		}
 		data["search"] = search
 	}
+
+	s.log.Infow("GetMapConfig", "projectName", projectName, "ows_url", data["ows_url"])
+
 	return data, nil
 }
 
-func (s *projectService) AccessibleProjects(username string, skipErrors bool) ([]domain.ProjectInfo, error) {
-	projects := make([]domain.ProjectInfo, 0)
-	list, err := s.repo.AllProjects(skipErrors)
-	if err != nil {
-		return projects, err
+// NUEVA función simplificada para extraer variables
+func (s *projectService) extractLayerVariables(projectName string, metaLayers map[string]domain.LayerMeta) map[string]interface{} {
+	layerVariables := make(map[string]interface{})
+
+	// Parsear los metadatos QGIS completos como un mapa genérico
+	var qgisMetaObj map[string]interface{}
+	if err := s.repo.ParseQgisMetadata(projectName, &qgisMetaObj); err != nil {
+		s.log.Errorw("[extractLayerVariables] error parsing QGIS metadata", "project", projectName, zap.Error(err))
+		return layerVariables
 	}
-	for _, projectName := range list {
-		pi, err := s.repo.GetProjectInfo(projectName)
-		if err != nil {
-			s.log.Errorw("getting project info", "project", projectName, zap.Error(err))
-			if !skipErrors {
-				return nil, err
-			}
-		} else {
-			if pi.Authentication == "public" || pi.Authentication == "authenticated" {
-				projects = append(projects, pi)
-			} else if pi.Authentication == "users" {
-				settings, err := s.repo.GetSettings(projectName)
-				if err != nil {
-					s.log.Errorw("getting project settings", "project", projectName, zap.Error(err))
-					if !skipErrors {
-						return nil, err
+
+	// Buscar variables en los metadatos de las capas
+	if layersMetadata, ok := qgisMetaObj["layers"]; ok {
+		// Caso 1: Las capas están en un mapa con ID como clave
+		if layersMap, isMap := layersMetadata.(map[string]interface{}); isMap {
+			for layerId, layerData := range layersMap {
+				if layerObj, isLayerMap := layerData.(map[string]interface{}); isLayerMap {
+					if vars, hasVars := layerObj["variables"].(map[string]interface{}); hasVars && len(vars) > 0 {
+						layerVariables[layerId] = vars
+						s.log.Infow("[extractLayerVariables] variables encontradas en capa (mapa)",
+							"project", projectName,
+							"layerId", layerId,
+							"variables", vars)
 					}
 				}
-				if domain.StringArray(settings.Auth.Users).Has(username) {
-					projects = append(projects, pi)
+			}
+		} else if layersArray, isArray := layersMetadata.([]interface{}); isArray {
+			// Caso 2: Las capas están en un array
+			for _, layer := range layersArray {
+				if layerObj, isMap := layer.(map[string]interface{}); isMap {
+					layerId, hasId := layerObj["id"].(string)
+					if !hasId {
+						// Intentar con el campo name si id no existe
+						layerId, hasId = layerObj["name"].(string)
+						if !hasId {
+							continue
+						}
+					}
+
+					if vars, hasVars := layerObj["variables"].(map[string]interface{}); hasVars && len(vars) > 0 {
+						layerVariables[layerId] = vars
+						s.log.Infow("[extractLayerVariables] variables encontradas en capa (array)",
+							"project", projectName,
+							"layerId", layerId,
+							"variables", vars)
+					}
 				}
 			}
 		}
 	}
-	return projects, nil
+
+	// También buscar variables a nivel de proyecto
+	if projectVars, ok := qgisMetaObj["variables"].(map[string]interface{}); ok && len(projectVars) > 0 {
+		layerVariables["@project"] = projectVars
+		s.log.Infow("[extractLayerVariables] variables de proyecto encontradas",
+			"project", projectName,
+			"variables", projectVars)
+	}
+
+	return layerVariables
+}
+
+// integrateVariablesIntoLayers integra las variables directamente en cada capa
+func (s *projectService) integrateVariablesIntoLayers(layersData []any, layerVariables map[string]interface{}, metaLayers map[string]domain.LayerMeta) {
+	s.log.Infow("[integrateVariablesIntoLayers] Iniciando integración", "layersCount", len(layersData), "variablesCount", len(layerVariables))
+
+	for i, layerObj := range layersData {
+		s.log.Infow("[integrateVariablesIntoLayers] Procesando item", "index", i, "type", fmt.Sprintf("%T", layerObj))
+		switch layer := layerObj.(type) {
+		case map[string]interface{}:
+			// Si es una capa individual
+			if layerName, ok := layer["name"].(string); ok {
+				s.log.Infow("[integrateVariablesIntoLayers] Procesando capa", "index", i, "layerName", layerName)
+
+				// Buscar el ID de la capa basándose en el nombre
+				var layerId string
+				for id, metaLayer := range metaLayers {
+					if metaLayer.Name == layerName {
+						layerId = id
+						s.log.Infow("[integrateVariablesIntoLayers] Layer ID encontrado", "layerName", layerName, "layerId", layerId)
+						break
+					}
+				}
+
+				// Si encontramos el ID y tiene variables, integrarlas directamente
+				if layerId != "" {
+					if vars, hasVars := layerVariables[layerId].(map[string]interface{}); hasVars {
+						s.log.Infow("[integrateVariablesIntoLayers] Integrando variables", "layerName", layerName, "layerId", layerId, "variables", vars)
+						for varName, varValue := range vars {
+							layer[varName] = varValue
+							s.log.Infow("[integrateVariablesIntoLayers] Variable integrada", "layerName", layerName, "varName", varName, "varValue", varValue)
+						}
+					} else {
+						s.log.Infow("[integrateVariablesIntoLayers] No hay variables para esta capa", "layerName", layerName, "layerId", layerId)
+					}
+				} else {
+					s.log.Warnw("[integrateVariablesIntoLayers] No se encontró ID para la capa", "layerName", layerName)
+				}
+			} else {
+				s.log.Infow("[integrateVariablesIntoLayers] Item sin nombre de capa", "index", i)
+			}
+
+			// Si es un grupo, procesar recursivamente
+			if nestedLayers, ok := layer["layers"].([]any); ok {
+				s.log.Infow("[integrateVariablesIntoLayers] Procesando grupo recursivamente", "index", i, "nestedCount", len(nestedLayers))
+				s.integrateVariablesIntoLayers(nestedLayers, layerVariables, metaLayers)
+			}
+		default:
+			s.log.Warnw("[integrateVariablesIntoLayers] Item no es un mapa", "index", i, "type", fmt.Sprintf("%T", layerObj))
+		}
+	}
+
+	s.log.Infow("[integrateVariablesIntoLayers] Integración completada")
 }
 
 func (s *projectService) Close() {
-	s.repo.Close()
+	if s.repo != nil {
+		s.repo.Close()
+	}
 }
