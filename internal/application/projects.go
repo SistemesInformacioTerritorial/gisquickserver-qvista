@@ -143,6 +143,27 @@ func (s *projectService) GetUserProjects(username string) ([]domain.ProjectInfo,
 
 }
 
+func (s *projectService) AccessibleProjects(username string, skipErrors bool) ([]domain.ProjectInfo, error) {
+	projects, err := s.repo.UserProjects(username)
+	if err != nil {
+		return nil, fmt.Errorf("getting user's projects: %w", err)
+	}
+
+	data := make([]domain.ProjectInfo, 0, len(projects))
+	for _, name := range projects {
+		info, err := s.repo.GetProjectInfo(name)
+		if err != nil {
+			if skipErrors {
+				s.log.Warnw("Skipping project with error", "project", name, "error", err)
+				continue
+			}
+			return nil, fmt.Errorf("getting project info for %s: %w", name, err)
+		}
+		data = append(data, info)
+	}
+	return data, nil
+}
+
 func (s *projectService) SaveFile(projectName, directory, pattern string, r io.Reader, size int64) (domain.ProjectFile, error) {
 	username := strings.Split(projectName, "/")[0]
 	accountConfig, err := s.limiter.GetAccountLimits(username)
@@ -979,4 +1000,10 @@ func (s *projectService) integrateVariablesIntoLayers(layersData []any, layerVar
 	}
 
 	s.log.Infow("[integrateVariablesIntoLayers] Integración completada")
+}
+
+func (s *projectService) Close() {
+	if s.repo != nil {
+		s.repo.Close()
+	}
 }
