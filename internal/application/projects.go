@@ -647,9 +647,6 @@ func (s *projectService) GetMapConfig(projectName string, user domain.User) (map
 	layers, err := TransformLayersTree(
 		overlays,
 		func(id string) bool {
-			// drawingOrder := indexOf(meta.LayersOrder, id)
-			// return !settings.Layers[id].Flags.Has("excluded") && rolesPerms.LayerFlags(id).Has("view")
-			// return drawingOrder != -1 && !settings.Layers[id].Flags.Has("excluded") && (rolesPerms == nil || rolesPerms.LayerFlags(id).Has("view"))
 			return !settings.Layers[id].Flags.Has("excluded") && (rolesPerms == nil || rolesPerms.LayerFlags(id).Has("view"))
 		},
 		func(id string) interface{} {
@@ -708,12 +705,7 @@ func (s *projectService) GetMapConfig(projectName string, user domain.User) (map
 				Queryable: queryable,
 				InfoPanel: lset.InfoPanelComponent,
 			}
-			// if !lset.Flags.Has("render_off") {
-			// 	drawingOrder := indexOf(meta.LayersOrder, id)
-			// 	ldata.DrawingOrder = &drawingOrder
-			// } else {
-			// 	ldata.Visible = false
-			// }
+
 			drawingOrder := -1
 			if !lset.Flags.Has("render_off") {
 				drawingOrder = indexOf(meta.LayersOrder, id)
@@ -744,18 +736,7 @@ func (s *projectService) GetMapConfig(projectName string, user domain.User) (map
 					ldata.Permissions.Update = ldata.Permissions.Update && lperms.Has("update")
 				}
 
-				// ldata.Attributes[0].Constrains
 				if queryable && len(lmeta.Attributes) > 0 {
-
-					// if len(lset.Attributes) > 0 {
-					// 	for _, a := range lmeta.Attributes {
-					// 		as, ok := lset.Attributes[a.Name]
-					// 		if ok {
-					// 			s.log.Infow("attribute", "layer", lmeta.Title, "name", a.Name, "settings", as, "config nill", as.Config == nil)
-					// 		}
-					// 	}
-					// }
-
 					if lset.Flags.Has("export") {
 						ldata.ExportFields = lset.ExportFields
 					}
@@ -803,8 +784,8 @@ func (s *projectService) GetMapConfig(projectName string, user domain.User) (map
 	if err != nil {
 		return nil, err
 	}
+
 	data := make(map[string]interface{})
-	// data["authentication"] = settings.Authentication
 	data["use_mapcache"] = settings.MapCache
 	data["zoom_extent"] = settings.InitialExtent
 	data["project_extent"] = settings.Extent
@@ -816,7 +797,8 @@ func (s *projectService) GetMapConfig(projectName string, user domain.User) (map
 	data["projection"] = meta.Projection
 	data["projections"] = meta.Projections
 	data["units"] = meta.Units
-	data["print_composers"] = meta.ComposerTemplates // TODO: filter by permissions
+	data["print_composers"] = meta.ComposerTemplates
+
 	if len(settings.Formatters) > 0 {
 		data["formatters"] = settings.Formatters
 	}
@@ -827,57 +809,91 @@ func (s *projectService) GetMapConfig(projectName string, user domain.User) (map
 	} else {
 		data["scripts"] = scripts
 	}
+
 	if settings.Title != "" {
 		data["title"] = settings.Title
 	} else {
 		data["title"] = meta.Title
 	}
-	// temporary backward compatibility
 	data["root_title"] = data["title"]
-
 	data["name"] = projectName
 	data["ows_url"] = fmt.Sprintf("/api/map/ows/%s", projectName)
 	data["ows_project"] = projectName
 
-	// NUEVA FUNCIONALIDAD: Integrar variables de capa en cada capa
-	s.log.Infow("[GetMapConfig] Iniciando extracción de variables", "project", projectName)
-	layerVariables := s.extractLayerVariables(projectName)
-	s.log.Infow("[GetMapConfig] Variables extraídas", "project", projectName, "count", len(layerVariables), "variables", layerVariables)
-
+	// EXTRAER VARIABLES DE CAPA DEL ARCHIVO QGS/QGZ
+	layerVariables := s.extractLayerVariables(projectName, meta.Layers)
 	if len(layerVariables) > 0 {
-		// Integrar variables directamente en cada capa
-		s.log.Infow("[GetMapConfig] Integrando variables en capas", "project", projectName)
 		s.integrateVariablesIntoLayers(layers, layerVariables, meta.Layers)
 		s.integrateVariablesIntoLayers(baseLayersData, layerVariables, meta.Layers)
-		s.log.Infow("[GetMapConfig] Variables integradas en capas", "project", projectName)
-	} else {
-		s.log.Warnw("[GetMapConfig] No se encontraron variables de capa", "project", projectName)
 	}
 
-	// Corrección: usar s.repo en lugar de s.storage
+	topics := make([]domain.Topic, 0)
+	var visibleTopics []string
+	if rolesPerms != nil {
+		visibleTopics = rolesPerms.UserTopics()
+	}
+	for _, topic := range settings.Topics {
+		if visibleTopics != nil && !contains(visibleTopics, topic.ID) {
+			continue
+		}
+		topicLayers := make([]string, 0)
+		for _, lid := range topic.Layers {
+			lset := settings.Layers[lid]
+			visible := !lset.Flags.Has("excluded") && !lset.Flags.Has("hidden")
+			if visible && rolesPerms != nil {
+				visible = rolesPerms.LayerFlags(lid).Has("view")
+			}
+			if visible {
+				topicLayers = append(topicLayers, meta.Layers[lid].Name)
+			}
+		}
+		if len(topicLayers) > 0 {
+			topics = append(topics, domain.Topic{Title: topic.Title, Abstract: topic.Abstract, Layers: topicLayers})
+		}
+	}
+	data["topics"] = topics
+
+	if settings.Geocoding != nil || settings.SearchByLocation {
+		search := SearchConfig{SearchByLocation: settings.SearchByLocation}
+		if settings.Geocoding != nil {
+			search.GeocodingAPI = settings.Geocoding.Service
+		}
+		data["search"] = search
+	}
+
+	s.log.Infow("GetMapConfig", "projectName", projectName, "ows_url", data["ows_url"])
+
+	return data, nil
+}
+
+// NUEVA función simplificada para extraer variables
+func (s *projectService) extractLayerVariables(projectName string, metaLayers map[string]domain.LayerMeta) map[string]interface{} {
+	layerVariables := make(map[string]interface{})
+
+	// Parsear los metadatos QGIS completos como un mapa genérico
 	var qgisMetaObj map[string]interface{}
 	if err := s.repo.ParseQgisMetadata(projectName, &qgisMetaObj); err != nil {
-		s.log.Errorw("[GetMapConfig] loading QGIS metadata", "project", projectName, zap.Error(err))
-		return nil, fmt.Errorf("loading project metadata: %w", err)
+		s.log.Errorw("[extractLayerVariables] error parsing QGIS metadata", "project", projectName, zap.Error(err))
+		return layerVariables
 	}
 
-	// 3. Extraer y preparar variables de capa para el frontend
-	layerVariables = make(map[string]interface{})
-
-	// Los metadatos ya están parseados, podemos usarlos directamente
-	// Verificar primero si hay un mapa de capas
+	// Buscar variables en los metadatos de las capas
 	if layersMetadata, ok := qgisMetaObj["layers"]; ok {
-		// Puede ser un mapa de ID -> datos
+		// Caso 1: Las capas están en un mapa con ID como clave
 		if layersMap, isMap := layersMetadata.(map[string]interface{}); isMap {
 			for layerId, layerData := range layersMap {
 				if layerObj, isLayerMap := layerData.(map[string]interface{}); isLayerMap {
 					if vars, hasVars := layerObj["variables"].(map[string]interface{}); hasVars && len(vars) > 0 {
 						layerVariables[layerId] = vars
+						s.log.Infow("[extractLayerVariables] variables encontradas en capa (mapa)",
+							"project", projectName,
+							"layerId", layerId,
+							"variables", vars)
 					}
 				}
 			}
 		} else if layersArray, isArray := layersMetadata.([]interface{}); isArray {
-			// O puede ser un array de capas
+			// Caso 2: Las capas están en un array
 			for _, layer := range layersArray {
 				if layerObj, isMap := layer.(map[string]interface{}); isMap {
 					layerId, hasId := layerObj["id"].(string)
@@ -889,200 +905,26 @@ func (s *projectService) GetMapConfig(projectName string, user domain.User) (map
 						}
 					}
 
-					// Buscar variables dentro de la capa
 					if vars, hasVars := layerObj["variables"].(map[string]interface{}); hasVars && len(vars) > 0 {
 						layerVariables[layerId] = vars
+						s.log.Infow("[extractLayerVariables] variables encontradas en capa (array)",
+							"project", projectName,
+							"layerId", layerId,
+							"variables", vars)
 					}
 				}
 			}
 		}
 	}
 
-	// 4. Solo añadir variables de capa al resultado si encontramos alguna
-	if len(layerVariables) > 0 {
-		data["layer_variables"] = layerVariables
-		s.log.Infow("[GetMapConfig] variables de capa encontradas",
+	// También buscar variables a nivel de proyecto
+	if projectVars, ok := qgisMetaObj["variables"].(map[string]interface{}); ok && len(projectVars) > 0 {
+		layerVariables["@project"] = projectVars
+		s.log.Infow("[extractLayerVariables] variables de proyecto encontradas",
 			"project", projectName,
-			"count", len(layerVariables))
+			"variables", projectVars)
 	}
 
-	// Modificar la línea de log existente para incluir layer_variables
-	s.log.Infow("GetMapConfig", "projectName", projectName, "ows_url", data["ows_url"], "layer_variables", layerVariables)
-
-	topics := make([]domain.Topic, 0)
-
-	var visibleTopics []string
-	if rolesPerms != nil {
-		visibleTopics = rolesPerms.UserTopics()
-	}
-	for _, topic := range settings.Topics {
-		if visibleTopics != nil && !contains(visibleTopics, topic.ID) {
-			continue
-		}
-		layers := make([]string, 0)
-		for _, lid := range topic.Layers {
-			lset := settings.Layers[lid]
-
-			visible := !lset.Flags.Has("excluded") && !lset.Flags.Has("hidden")
-			if visible && rolesPerms != nil {
-				visible = rolesPerms.LayerFlags(lid).Has("view")
-			}
-			if visible {
-				layers = append(layers, meta.Layers[lid].Name)
-			}
-		}
-		if len(layers) > 0 {
-			topics = append(topics, domain.Topic{Title: topic.Title, Abstract: topic.Abstract, Layers: layers})
-		}
-	}
-	data["topics"] = topics
-	if settings.Geocoding != nil || settings.SearchByLocation {
-		search := SearchConfig{SearchByLocation: settings.SearchByLocation}
-		if settings.Geocoding != nil {
-			search.GeocodingAPI = settings.Geocoding.Service
-		}
-		data["search"] = search
-	}
-	return data, nil
-}
-
-func (s *projectService) AccessibleProjects(username string, skipErrors bool) ([]domain.ProjectInfo, error) {
-	projects := make([]domain.ProjectInfo, 0)
-	list, err := s.repo.AllProjects(skipErrors)
-	if err != nil {
-		return projects, err
-	}
-	for _, projectName := range list {
-		pi, err := s.repo.GetProjectInfo(projectName)
-		if err != nil {
-			s.log.Errorw("getting project info", "project", projectName, zap.Error(err))
-			if !skipErrors {
-				return nil, err
-			}
-		} else {
-			if pi.Authentication == "public" || pi.Authentication == "authenticated" {
-				projects = append(projects, pi)
-			} else if pi.Authentication == "users" {
-				settings, err := s.repo.GetSettings(projectName)
-				if err != nil {
-					s.log.Errorw("getting project settings", "project", projectName, zap.Error(err))
-					if !skipErrors {
-						return nil, err
-					}
-				}
-				if domain.StringArray(settings.Auth.Users).Has(username) {
-					projects = append(projects, pi)
-				}
-			}
-		}
-	}
-	return projects, nil
-}
-
-func (s *projectService) Close() {
-	s.repo.Close()
-}
-
-// extractLayerVariables extrae las variables de capa del archivo QGIS
-func (s *projectService) extractLayerVariables(projectName string) map[string]interface{} {
-	layerVariables := make(map[string]interface{})
-
-	s.log.Infow("[extractLayerVariables] Iniciando extracción", "project", projectName)
-
-	// Parsear los metadatos QGIS completos como un mapa genérico
-	var qgisMetaObj map[string]interface{}
-	if err := s.repo.ParseQgisMetadata(projectName, &qgisMetaObj); err != nil {
-		s.log.Errorw("[extractLayerVariables] Error parsing metadata", "project", projectName, "error", err)
-		return layerVariables
-	}
-
-	s.log.Infow("[extractLayerVariables] Metadata parseado correctamente", "project", projectName)
-
-	// Debug: mostrar estructura del metadata
-	if layers, ok := qgisMetaObj["layers"]; ok {
-		s.log.Infow("[extractLayerVariables] Encontrada sección layers en metadata", "project", projectName, "type", fmt.Sprintf("%T", layers))
-	} else {
-		s.log.Warnw("[extractLayerVariables] No se encontró sección 'layers' en metadata", "project", projectName)
-		// Mostrar las claves disponibles
-		keys := make([]string, 0, len(qgisMetaObj))
-		for k := range qgisMetaObj {
-			keys = append(keys, k)
-		}
-		s.log.Infow("[extractLayerVariables] Claves disponibles en metadata", "project", projectName, "keys", keys)
-		return layerVariables
-	}
-
-	// Buscar variables en los metadatos de las capas
-	if layersMetadata, ok := qgisMetaObj["layers"]; ok {
-		// Caso 1: Las capas están en un mapa con ID como clave
-		if layersMap, isMap := layersMetadata.(map[string]interface{}); isMap {
-			s.log.Infow("[extractLayerVariables] Procesando layers como mapa", "project", projectName, "count", len(layersMap))
-			for layerId, layerData := range layersMap {
-				s.log.Infow("[extractLayerVariables] Procesando layer", "project", projectName, "layerId", layerId, "type", fmt.Sprintf("%T", layerData))
-				if layerObj, isLayerMap := layerData.(map[string]interface{}); isLayerMap {
-					// Mostrar las claves disponibles en la capa
-					layerKeys := make([]string, 0, len(layerObj))
-					for k := range layerObj {
-						layerKeys = append(layerKeys, k)
-					}
-					s.log.Infow("[extractLayerVariables] Claves en layer", "project", projectName, "layerId", layerId, "keys", layerKeys)
-
-					if vars, hasVars := layerObj["variables"].(map[string]interface{}); hasVars && len(vars) > 0 {
-						layerVariables[layerId] = vars
-						s.log.Infow("[extractLayerVariables] Variables encontradas en layer (mapa)",
-							"project", projectName,
-							"layerId", layerId,
-							"variables", vars)
-					} else {
-						s.log.Infow("[extractLayerVariables] No se encontraron variables en layer", "project", projectName, "layerId", layerId)
-					}
-				} else {
-					s.log.Warnw("[extractLayerVariables] Layer data no es un mapa", "project", projectName, "layerId", layerId, "type", fmt.Sprintf("%T", layerData))
-				}
-			}
-		} else if layersArray, isArray := layersMetadata.([]interface{}); isArray {
-			s.log.Infow("[extractLayerVariables] Procesando layers como array", "project", projectName, "count", len(layersArray))
-			// Caso 2: Las capas están en un array
-			for i, layer := range layersArray {
-				s.log.Infow("[extractLayerVariables] Procesando layer array", "project", projectName, "index", i, "type", fmt.Sprintf("%T", layer))
-				if layerObj, isMap := layer.(map[string]interface{}); isMap {
-					// Mostrar las claves disponibles en la capa
-					layerKeys := make([]string, 0, len(layerObj))
-					for k := range layerObj {
-						layerKeys = append(layerKeys, k)
-					}
-					s.log.Infow("[extractLayerVariables] Claves en layer array", "project", projectName, "index", i, "keys", layerKeys)
-
-					layerId, hasId := layerObj["id"].(string)
-					if !hasId {
-						// Intentar con el campo name si id no existe
-						layerId, hasId = layerObj["name"].(string)
-						if !hasId {
-							s.log.Warnw("[extractLayerVariables] Layer sin ID ni name", "project", projectName, "index", i)
-							continue
-						}
-					}
-					s.log.Infow("[extractLayerVariables] Layer ID encontrado", "project", projectName, "layerId", layerId)
-
-					if vars, hasVars := layerObj["variables"].(map[string]interface{}); hasVars && len(vars) > 0 {
-						layerVariables[layerId] = vars
-						s.log.Infow("[extractLayerVariables] Variables encontradas en layer (array)",
-							"project", projectName,
-							"layerId", layerId,
-							"variables", vars)
-					} else {
-						s.log.Infow("[extractLayerVariables] No se encontraron variables en layer array", "project", projectName, "layerId", layerId)
-					}
-				} else {
-					s.log.Warnw("[extractLayerVariables] Layer array item no es un mapa", "project", projectName, "index", i, "type", fmt.Sprintf("%T", layer))
-				}
-			}
-		} else {
-			s.log.Warnw("[extractLayerVariables] Layers metadata no es ni mapa ni array", "project", projectName, "type", fmt.Sprintf("%T", layersMetadata))
-		}
-	}
-
-	s.log.Infow("[extractLayerVariables] Extracción completada", "project", projectName, "totalVariables", len(layerVariables))
 	return layerVariables
 }
 
