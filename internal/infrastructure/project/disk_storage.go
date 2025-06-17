@@ -91,6 +91,8 @@ type DiskStorage struct {
 	configCache       *cache.DataCache[string, json.RawMessage]
 	projectInfoReader JsonFilesReader[domain.ProjectInfo]
 	settingsReader    JsonFilesReader[domain.ProjectSettings]
+	configGenerator   domain.ProjectConfigGenerator
+	qgisParser        *QgisParser // ✅ AÑADIR
 }
 
 type Info struct {
@@ -152,26 +154,25 @@ type JsonFilesReader[T any] interface {
 
 var excludeExtRegex = regexp.MustCompile(`(?i).*\.(gpkg-wal|gpkg-shm)$`)
 
-func NewDiskStorage(log *zap.SugaredLogger, projectsRoot string) *DiskStorage {
+func NewDiskStorage(log *zap.SugaredLogger, projectsRoot string, configGenerator domain.ProjectConfigGenerator) *DiskStorage {
 	cfgCache := cache.NewDataCache(func(filename string) (json.RawMessage, error) {
 		var config json.RawMessage
 		content, err := ioutil.ReadFile(filename)
 		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				return nil, nil
-			}
-			return nil, fmt.Errorf("reading project file: %w", err)
+			return nil, err
 		}
 		err = json.Unmarshal(content, &config)
 		if err != nil {
-			return nil, fmt.Errorf("reading customization file: %w", err)
+			return nil, err
 		}
 		return config, nil
 	})
 	ds := &DiskStorage{
-		ProjectsRoot: projectsRoot,
-		log:          log,
-		configCache:  cfgCache,
+		ProjectsRoot:    projectsRoot,
+		log:             log,
+		configCache:     cfgCache,
+		configGenerator: configGenerator,
+		qgisParser:      NewQgisParser(log, projectsRoot), // ✅ AÑADIR
 	}
 	loader := ttlcache.LoaderFunc[string, *FilesIndex](
 		func(c *ttlcache.Cache[string, *FilesIndex], project string) *ttlcache.Item[string, *FilesIndex] {
@@ -958,6 +959,19 @@ func (s *DiskStorage) UpdateFiles(projectName string, info domain.FilesChanges, 
 	if err := s.saveConfigFile(projectName, "project.json", project); err != nil {
 		return nil, fmt.Errorf("updating project file: %w", err)
 	}
+	// Regenerar project.json amb variables qV_search
+	if s.configGenerator != nil {
+		s.log.Infow("🔄 Regenerant project.json amb variables", "project", projectName)
+		dummyUser := domain.User{Username: "system"}
+
+		if _, err := s.configGenerator.GetMapConfig(projectName, dummyUser); err != nil {
+			s.log.Errorw("Error regenerant project.json", "project", projectName, "error", err)
+			// No retornem error per no trencar l'update
+		} else {
+			s.log.Infow("✅ project.json regenerat amb variables", "project", projectName)
+		}
+	}
+
 	return indexProjectFilesList(index), nil
 }
 
@@ -1075,4 +1089,32 @@ func (s *DiskStorage) GetProjectCustomizations(projectName string) (json.RawMess
 		return nil, err
 	}
 	return config, nil
+}
+
+// A disk_storage.go - corregir línea 1098
+func (s *DiskStorage) UpdateProject(projectName string) error {
+	s.log.Infow("🔄 Regenerando project.json con variables", "project", projectName)
+
+	if s.configGenerator != nil {
+		dummyUser := domain.User{Username: "system"}
+		_, err := s.configGenerator.GetMapConfig(projectName, dummyUser)
+		if err != nil {
+			s.log.Errorw("Error regenerando project.json", "project", projectName, "error", err)
+			return err
+		}
+		s.log.Infow("✅ project.json regenerado correctamente", "project", projectName)
+	}
+
+	return nil
+}
+
+func (s *DiskStorage) GetLayerVariables(projectName string) (map[string]map[string]string, error) {
+	// Obtener información del proyecto para saber el nombre del archivo QGS/QGZ
+	projectInfo, err := s.GetProjectInfo(projectName)
+	if err != nil {
+		return nil, fmt.Errorf("error obteniendo info del proyecto: %w", err)
+	}
+
+	// Extraer variables del archivo QGS/QGZ
+	return s.qgisParser.ExtractLayerVariables(projectName, projectInfo.QgisFile)
 }

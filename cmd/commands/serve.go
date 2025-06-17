@@ -400,7 +400,7 @@ func Serve() error {
 	sessionStore := auth.NewRedisStore(rdb)
 	authServ := auth.NewAuthService(log, cfg.Auth.SessionExpiration, accountsRepo, sessionStore)
 
-	projectsRepo := project.NewDiskStorage(log, cfg.Gisquick.ProjectsRoot)
+	// ✅ PRIMER: Crear projectsServ sense projectsRepo
 	defaultAccountConfig := domain.AccountConfig{
 		ProjectsCountLimit: cfg.Gisquick.AccountProjectsLimit,
 		ProjectSizeLimit:   domain.ByteSize(cfg.Gisquick.ProjectSizeLimit),
@@ -412,7 +412,15 @@ func Serve() error {
 	} else {
 		limiter = project.NewSimpleProjectsLimiter(defaultAccountConfig)
 	}
-	projectsServ := application.NewProjectsService(log, projectsRepo, limiter)
+
+	// ✅ CREAR projectsServ sense repo temporalment
+	projectsServ := application.NewProjectsService(log, nil, limiter)
+
+	// ✅ CREAR projectsRepo amb projectsServ com a configGenerator
+	projectsRepo := project.NewDiskStorage(log, cfg.Gisquick.ProjectsRoot, projectsServ)
+
+	// ✅ INJECTAR repo al projectsServ
+	projectsServ.SetRepo(projectsRepo)
 
 	sws := ws.NewSettingsWS(log)
 	s := server.NewServer(log, conf, authServ, accountsService, projectsServ, sws, limiter, notifications)

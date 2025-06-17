@@ -889,64 +889,65 @@ func (s *projectService) GetMapConfig(projectName string, user domain.User) (map
 
 // NUEVA función simplificada para extraer variables
 func (s *projectService) extractLayerVariables(projectName string, metaLayers map[string]domain.LayerMeta) map[string]interface{} {
+	s.log.Infow("🔍 [DEBUG] extractLayerVariables INICIADA", "project", projectName)
+
 	layerVariables := make(map[string]interface{})
 
-	// Parsear los metadatos QGIS completos como un mapa genérico
-	var qgisMetaObj map[string]interface{}
-	if err := s.repo.ParseQgisMetadata(projectName, &qgisMetaObj); err != nil {
-		s.log.Errorw("[extractLayerVariables] error parsing QGIS metadata", "project", projectName, zap.Error(err))
-		return layerVariables
-	}
+	// ✅ USAR NUEVO MÉTODO: Leer variables directamente del QGS/QGZ
+	varsFromQgs, err := s.repo.GetLayerVariables(projectName)
+	if err != nil {
+		s.log.Errorw("🚨 Error obteniendo variables del QGS/QGZ", "project", projectName, "error", err)
+	} else {
+		s.log.Infow("✅ Variables extraídas directamente del QGS/QGZ",
+			"project", projectName,
+			"layersCount", len(varsFromQgs))
 
-	// Buscar variables en los metadatos de las capas
-	if layersMetadata, ok := qgisMetaObj["layers"]; ok {
-		// Caso 1: Las capas están en un mapa con ID como clave
-		if layersMap, isMap := layersMetadata.(map[string]interface{}); isMap {
-			for layerId, layerData := range layersMap {
-				if layerObj, isLayerMap := layerData.(map[string]interface{}); isLayerMap {
-					if vars, hasVars := layerObj["variables"].(map[string]interface{}); hasVars && len(vars) > 0 {
-						layerVariables[layerId] = vars
-						s.log.Infow("[extractLayerVariables] variables encontradas en capa (mapa)",
-							"project", projectName,
-							"layerId", layerId,
-							"variables", vars)
-					}
+		// Convertir al formato esperado
+		for layerId, vars := range varsFromQgs {
+			if len(vars) > 0 {
+				// Buscar el ID correcto en los metadatos si es necesario
+				metaLayerId := s.findMatchingLayerId(layerId, metaLayers)
+				if metaLayerId == "" {
+					metaLayerId = layerId
 				}
-			}
-		} else if layersArray, isArray := layersMetadata.([]interface{}); isArray {
-			// Caso 2: Las capas están en un array
-			for _, layer := range layersArray {
-				if layerObj, isMap := layer.(map[string]interface{}); isMap {
-					layerId, hasId := layerObj["id"].(string)
-					if !hasId {
-						// Intentar con el campo name si id no existe
-						layerId, hasId = layerObj["name"].(string)
-						if !hasId {
-							continue
-						}
-					}
 
-					if vars, hasVars := layerObj["variables"].(map[string]interface{}); hasVars && len(vars) > 0 {
-						layerVariables[layerId] = vars
-						s.log.Infow("[extractLayerVariables] variables encontradas en capa (array)",
-							"project", projectName,
-							"layerId", layerId,
-							"variables", vars)
-					}
-				}
+				layerVariables[metaLayerId] = vars
+				s.log.Infow("[extractLayerVariables] Variables encontradas en capa",
+					"project", projectName,
+					"layerId", metaLayerId,
+					"qgsLayerId", layerId,
+					"variables", vars)
 			}
 		}
 	}
 
-	// También buscar variables a nivel de proyecto
-	if projectVars, ok := qgisMetaObj["variables"].(map[string]interface{}); ok && len(projectVars) > 0 {
-		layerVariables["@project"] = projectVars
-		s.log.Infow("[extractLayerVariables] variables de proyecto encontradas",
-			"project", projectName,
-			"variables", projectVars)
+	return layerVariables
+}
+
+// A projects.go - Añadir método auxiliar
+func (s *projectService) findMatchingLayerId(qgsLayerId string, metaLayers map[string]domain.LayerMeta) string {
+	// Primero intentar match directo
+	if _, exists := metaLayers[qgsLayerId]; exists {
+		return qgsLayerId
 	}
 
-	return layerVariables
+	// Extraer nombre de capa del ID (puede variar el formato)
+	parts := strings.Split(qgsLayerId, "_")
+	baseName := ""
+	if len(parts) > 0 {
+		baseName = parts[0]
+	}
+
+	// Buscar por coincidencia parcial
+	for id, layer := range metaLayers {
+		if strings.Contains(id, baseName) ||
+			strings.Contains(layer.Name, baseName) ||
+			strings.Contains(layer.Title, baseName) {
+			return id
+		}
+	}
+
+	return ""
 }
 
 // integrateVariablesIntoLayers integra las variables directamente en cada capa
@@ -1006,4 +1007,9 @@ func (s *projectService) Close() {
 	if s.repo != nil {
 		s.repo.Close()
 	}
+}
+
+// A projects.go - afegir aquest mètode
+func (s *projectService) SetRepo(repo domain.ProjectsRepository) {
+	s.repo = repo
 }
