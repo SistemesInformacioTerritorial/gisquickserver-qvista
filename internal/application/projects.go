@@ -889,6 +889,39 @@ func (s *projectService) GetMapConfig(projectName string, user domain.User) (map
 
 	s.log.Infow("GetMapConfig", "projectName", projectName, "ows_url", data["ows_url"])
 
+	// ✅ AÑADIR ESTE LOG JUSTO ANTES DEL RETURN FINAL
+	s.log.Infow("🎯 [GetMapConfig] JSON FINAL GENERADO",
+		"projectName", projectName)
+
+	// Verificar que las capas tienen qV_search en el result final
+	if layers, hasLayers := data["layers"]; hasLayers {
+		if layersSlice, ok := layers.([]interface{}); ok {
+			for i, layer := range layersSlice {
+				switch l := layer.(type) {
+				case OverlayLayer:
+					if l.QVSearch != "" {
+						s.log.Infow("🏆 [GetMapConfig] CAPA CON qV_search EN JSON FINAL",
+							"index", i,
+							"layerName", l.Name,
+							"layerTitle", l.Title,
+							"qgisId", l.QgisId,
+							"qV_search", l.QVSearch)
+					}
+				case map[string]interface{}:
+					if qvSearch, hasQV := l["qV_search"]; hasQV && qvSearch != "" {
+						name, _ := l["name"].(string)
+						title, _ := l["title"].(string)
+						s.log.Infow("🏆 [GetMapConfig] CAPA CON qV_search EN JSON FINAL (map)",
+							"index", i,
+							"layerName", name,
+							"layerTitle", title,
+							"qV_search", qvSearch)
+					}
+				}
+			}
+		}
+	}
+
 	return data, nil
 }
 
