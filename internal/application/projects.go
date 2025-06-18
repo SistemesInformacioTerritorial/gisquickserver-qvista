@@ -975,6 +975,66 @@ func (s *projectService) integrateVariablesIntoLayers(
 		"layersCount", len(layers),
 		"variablesCount", len(layerVariables))
 
+	// 🔍 DIAGNÓSTICO CRÍTICO: Ver detalles de las capas ANTES de procesar
+	s.log.Infow("📋 [integrateVariablesIntoLayers] ANÁLISIS COMPLETO DE CAPAS:")
+	for i, layer := range layers {
+		layerType := fmt.Sprintf("%T", layer)
+		s.log.Infow("   📄 [integrateVariablesIntoLayers] CAPA DETECTADA",
+			"index", i,
+			"type", layerType)
+
+		switch l := layer.(type) {
+		case OverlayLayer:
+			s.log.Infow("      🔸 OverlayLayer (valor)",
+				"index", i,
+				"name", l.Name,
+				"qgisId", l.QgisId,
+				"title", l.Title,
+				"hasQVSearch", l.QVSearch != "",
+				"queryable", l.Queryable,
+				"hidden", l.Hidden)
+		case *OverlayLayer:
+			s.log.Infow("      🔹 OverlayLayer (puntero)",
+				"index", i,
+				"name", l.Name,
+				"qgisId", l.QgisId,
+				"title", l.Title,
+				"hasQVSearch", l.QVSearch != "",
+				"queryable", l.Queryable,
+				"hidden", l.Hidden)
+		case map[string]interface{}:
+			name, _ := l["name"].(string)
+			qgisId, _ := l["qgis_id"].(string)
+			title, _ := l["title"].(string)
+			s.log.Infow("      🔹 Map interface",
+				"index", i,
+				"name", name,
+				"qgisId", qgisId,
+				"title", title)
+		default:
+			s.log.Infow("      ❓ Tipo desconocido",
+				"index", i,
+				"type", layerType)
+		}
+	}
+
+	// 🔍 DIAGNÓSTICO: Ver qué variables tenemos disponibles
+	s.log.Infow("📊 [integrateVariablesIntoLayers] VARIABLES DISPONIBLES:")
+	for varId, variables := range layerVariables {
+		s.log.Infow("   🎯 Variable para capa",
+			"varId", varId,
+			"variables", variables)
+	}
+
+	// 🔍 DIAGNÓSTICO: Ver qué hay en metaLayers para referencia
+	s.log.Infow("📚 [integrateVariablesIntoLayers] METADATA DISPONIBLE:")
+	for metaId, metaLayer := range metaLayers {
+		s.log.Infow("   📘 Meta capa",
+			"metaId", metaId,
+			"metaName", metaLayer.Name,
+			"metaTitle", metaLayer.Title)
+	}
+
 	for i, layer := range layers {
 		s.log.Debugw("🔍 [integrateVariablesIntoLayers] Procesando item",
 			"index", i,
@@ -985,7 +1045,7 @@ func (s *projectService) integrateVariablesIntoLayers(
 			s.integrateVariablesInMap(l, layerVariables, i)
 		case *OverlayLayer:
 			s.integrateVariablesInOverlay(l, layerVariables, i)
-		case OverlayLayer: // ✅ AÑADIR ESTE CASO CRÍTICO
+		case OverlayLayer:
 			s.integrateVariablesInOverlayValue(&l, layerVariables, i)
 			layers[i] = l // Reasignar el valor modificado
 		default:
@@ -1050,20 +1110,92 @@ func (s *projectService) integrateVariablesInOverlayValue(overlay *OverlayLayer,
 	s.log.Infow("🗂️ [integrateVariablesInOverlayValue] Procesando OverlayLayer valor",
 		"index", index,
 		"overlayName", overlay.Name,
-		"overlayQgisId", overlay.QgisId)
+		"overlayQgisId", overlay.QgisId,
+		"overlayTitle", overlay.Title)
 
-	// Buscar variables para esta capa por QgisId
-	if variables, exists := layerVariables[overlay.QgisId]; exists {
+	// 🔍 DIAGNÓSTICO: Si el QgisId está vacío, intentar encontrarlo por nombre
+	actualQgisId := overlay.QgisId
+	if actualQgisId == "" {
+		s.log.Warnw("⚠️ [integrateVariablesInOverlayValue] QgisId está vacío, buscando por nombre",
+			"index", index,
+			"overlayName", overlay.Name,
+			"overlayTitle", overlay.Title)
+
+		// Intentar encontrar por nombre en las variables disponibles
+		for varId, variables := range layerVariables {
+			if varsMap, ok := variables.(map[string]string); ok {
+				if layerName, hasLayerName := varsMap["layerName"]; hasLayerName {
+					s.log.Debugw("🔍 [integrateVariablesInOverlayValue] Comparando nombres",
+						"varId", varId,
+						"qgsLayerName", layerName,
+						"overlayName", overlay.Name,
+						"overlayTitle", overlay.Title)
+
+					// Comparar con nombre y título
+					if layerName == overlay.Name || layerName == overlay.Title {
+						actualQgisId = varId
+						s.log.Infow("🔧 [integrateVariablesInOverlayValue] QgisId encontrado por nombre",
+							"index", index,
+							"foundQgisId", actualQgisId,
+							"matchedLayerName", layerName)
+						break
+					}
+				}
+			}
+		}
+	}
+
+	// Buscar variables para esta capa
+	if variables, exists := layerVariables[actualQgisId]; exists {
+		s.log.Infow("🎯 [integrateVariablesInOverlayValue] Variables encontradas",
+			"index", index,
+			"qgisId", actualQgisId,
+			"variables", variables)
+
 		if varsMap, ok := variables.(map[string]string); ok {
 			if qvSearch, hasQVSearch := varsMap["qV_search"]; hasQVSearch {
 				overlay.QVSearch = qvSearch
+				// 🔧 ASIGNAR TAMBIÉN EL QGIS_ID SI ESTABA VACÍO
+				if overlay.QgisId == "" {
+					overlay.QgisId = actualQgisId
+				}
+
 				s.log.Infow("✅ [integrateVariablesInOverlayValue] Variable qV_search INTEGRADA",
 					"index", index,
 					"overlayName", overlay.Name,
-					"overlayQgisId", overlay.QgisId,
+					"qgisId", overlay.QgisId,
 					"qV_search", qvSearch)
+			} else {
+				s.log.Warnw("⚠️ [integrateVariablesInOverlayValue] No hay qV_search en variables",
+					"index", index,
+					"qgisId", actualQgisId,
+					"availableVars", func() []string {
+						keys := make([]string, 0, len(varsMap))
+						for k := range varsMap {
+							keys = append(keys, k)
+						}
+						return keys
+					}())
 			}
+		} else {
+			s.log.Warnw("⚠️ [integrateVariablesInOverlayValue] Variables no son del tipo esperado",
+				"index", index,
+				"qgisId", actualQgisId,
+				"variablesType", fmt.Sprintf("%T", variables))
 		}
+	} else {
+		s.log.Warnw("⚠️ [integrateVariablesInOverlayValue] No hay variables para QgisId",
+			"index", index,
+			"qgisId", actualQgisId,
+			"overlayName", overlay.Name,
+			"overlayTitle", overlay.Title,
+			"availableIds", func() []string {
+				ids := make([]string, 0, len(layerVariables))
+				for id := range layerVariables {
+					ids = append(ids, id)
+				}
+				return ids
+			}())
 	}
 }
 
