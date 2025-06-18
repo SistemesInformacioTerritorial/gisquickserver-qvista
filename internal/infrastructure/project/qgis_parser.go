@@ -98,8 +98,24 @@ func (p *QgisParser) parseQgsXml(content []byte, projectName string) (map[string
 	type ProjectLayers struct {
 		Layers []MapLayer `xml:"maplayer"`
 	}
+
+	// ✅ NUEVA ESTRUCTURA PARA LAYER TREE
+	type LayerTreeLayer struct {
+		ID   string `xml:"id,attr"`
+		Name string `xml:"name,attr"`
+	}
+	type LayerTreeGroup struct {
+		Layers []LayerTreeLayer `xml:"layer-tree-layer"`
+		Groups []LayerTreeGroup `xml:"layer-tree-group"`
+	}
+	type LayerTree struct {
+		Groups []LayerTreeGroup `xml:"layer-tree-group"`
+		Layers []LayerTreeLayer `xml:"layer-tree-layer"`
+	}
+
 	type Qgis struct {
 		ProjectLayers ProjectLayers `xml:"projectlayers"`
+		LayerTree     LayerTree     `xml:"layer-tree-group"`
 	}
 
 	var doc Qgis
@@ -111,12 +127,63 @@ func (p *QgisParser) parseQgsXml(content []byte, projectName string) (map[string
 		"project", projectName,
 		"totalLayers", len(doc.ProjectLayers.Layers))
 
+	// ✅ CREAR MAPEO NOMBRE -> ID DESDE LAYER TREE
+	nameToIdMap := make(map[string]string)
+
+	// Procesar capas directas
+	for _, layer := range doc.LayerTree.Layers {
+		nameToIdMap[layer.Name] = layer.ID
+		p.log.Debugw("🗂️ [parseQgsXml] Mapping directo",
+			"layerName", layer.Name,
+			"layerId", layer.ID)
+	}
+
+	// Procesar grupos recursivamente
+	var processGroup func(group LayerTreeGroup)
+	processGroup = func(group LayerTreeGroup) {
+		for _, layer := range group.Layers {
+			nameToIdMap[layer.Name] = layer.ID
+			p.log.Debugw("🗂️ [parseQgsXml] Mapping desde grupo",
+				"layerName", layer.Name,
+				"layerId", layer.ID)
+		}
+		for _, subGroup := range group.Groups {
+			processGroup(subGroup)
+		}
+	}
+
+	for _, group := range doc.LayerTree.Groups {
+		processGroup(group)
+	}
+
 	varsMap := make(map[string]map[string]string)
 
 	for _, layer := range doc.ProjectLayers.Layers {
+		// ✅ RESOLVER ID USANDO LAYER TREE
+		layerId := layer.ID
+		if layerId == "" {
+			if treeId, exists := nameToIdMap[layer.LayerName]; exists {
+				layerId = treeId
+				p.log.Infow("🔧 [parseQgsXml] ID resuelto desde layer-tree",
+					"layerName", layer.LayerName,
+					"resolvedId", treeId)
+			} else {
+				p.log.Warnw("⚠️ [parseQgsXml] No se pudo resolver ID",
+					"layerName", layer.LayerName,
+					"availableNames", func() []string {
+						names := make([]string, 0, len(nameToIdMap))
+						for name := range nameToIdMap {
+							names = append(names, name)
+						}
+						return names
+					}())
+				continue
+			}
+		}
+
 		p.log.Infow("🗂️ [parseQgsXml] Procesando capa del QGS",
 			"project", projectName,
-			"layerId", layer.ID,
+			"layerId", layerId,
 			"layerName", layer.LayerName)
 
 		varNames := []string{}
@@ -142,7 +209,7 @@ func (p *QgisParser) parseQgsXml(content []byte, projectName string) (map[string
 
 		p.log.Debugw("📊 [parseQgsXml] Variables encontradas en capa",
 			"project", projectName,
-			"layerId", layer.ID,
+			"layerId", layerId,
 			"layerName", layer.LayerName,
 			"varNames", varNames,
 			"varValues", varValues)
@@ -150,14 +217,15 @@ func (p *QgisParser) parseQgsXml(content []byte, projectName string) (map[string
 		// Procesar variables encontradas
 		for i, name := range varNames {
 			if name == "qV_search" && i < len(varValues) {
-				if varsMap[layer.ID] == nil {
-					varsMap[layer.ID] = make(map[string]string)
+				if varsMap[layerId] == nil {
+					varsMap[layerId] = make(map[string]string)
 				}
-				varsMap[layer.ID]["qV_search"] = varValues[i]
+				varsMap[layerId]["qV_search"] = varValues[i]
+				varsMap[layerId]["layerName"] = layer.LayerName
 
 				p.log.Infow("✅ [parseQgsXml] Variable qV_search encontrada!",
 					"project", projectName,
-					"qgsLayerId", layer.ID,
+					"qgsLayerId", layerId,
 					"qgsLayerName", layer.LayerName,
 					"qV_search", varValues[i])
 			}
