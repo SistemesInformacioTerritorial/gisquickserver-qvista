@@ -1113,7 +1113,7 @@ func (s *projectService) integrateVariablesInOverlayValue(overlay *OverlayLayer,
 		"overlayQgisId", overlay.QgisId,
 		"overlayTitle", overlay.Title)
 
-	// 🔍 DIAGNÓSTICO: Si el QgisId está vacío, intentar encontrarlo por nombre
+	// 🔧 DIAGNÓSTICO: Si el QgisId está vacío, intentar encontrarlo por nombre/título
 	actualQgisId := overlay.QgisId
 	if actualQgisId == "" {
 		s.log.Warnw("⚠️ [integrateVariablesInOverlayValue] QgisId está vacío, buscando por nombre",
@@ -1121,7 +1121,7 @@ func (s *projectService) integrateVariablesInOverlayValue(overlay *OverlayLayer,
 			"overlayName", overlay.Name,
 			"overlayTitle", overlay.Title)
 
-		// Intentar encontrar por nombre en las variables disponibles
+		// Intentar encontrar por título en las variables disponibles
 		for varId, variables := range layerVariables {
 			if varsMap, ok := variables.(map[string]string); ok {
 				if layerName, hasLayerName := varsMap["layerName"]; hasLayerName {
@@ -1131,9 +1131,13 @@ func (s *projectService) integrateVariablesInOverlayValue(overlay *OverlayLayer,
 						"overlayName", overlay.Name,
 						"overlayTitle", overlay.Title)
 
-					// Comparar con nombre y título
-					if layerName == overlay.Name || layerName == overlay.Title {
+					// ✅ COMPARAR CON TÍTULO (que SÍ tiene valor)
+					if layerName == overlay.Title {
 						actualQgisId = varId
+						// ✅ ASIGNAR TAMBIÉN LOS CAMPOS VACÍOS
+						overlay.QgisId = varId
+						overlay.Name = layerName
+
 						s.log.Infow("🔧 [integrateVariablesInOverlayValue] QgisId encontrado por nombre",
 							"index", index,
 							"foundQgisId", actualQgisId,
@@ -1155,10 +1159,6 @@ func (s *projectService) integrateVariablesInOverlayValue(overlay *OverlayLayer,
 		if varsMap, ok := variables.(map[string]string); ok {
 			if qvSearch, hasQVSearch := varsMap["qV_search"]; hasQVSearch {
 				overlay.QVSearch = qvSearch
-				// 🔧 ASIGNAR TAMBIÉN EL QGIS_ID SI ESTABA VACÍO
-				if overlay.QgisId == "" {
-					overlay.QgisId = actualQgisId
-				}
 
 				s.log.Infow("✅ [integrateVariablesInOverlayValue] Variable qV_search INTEGRADA",
 					"index", index,
