@@ -436,6 +436,11 @@ type OverlayLayer struct {
 	ExportFields         []string                `json:"export_fields,omitempty"`
 	// Relations            json.RawMessage         `json:"relations,omitempty"`
 	Relations []map[string]any `json:"relations,omitempty"`
+	// Campos existentes...
+	QgisId string `json:"qgis_id"`
+	Name   string `json:"name"`
+	// Añadir este campo
+	QVSearch string `json:"qV_search,omitempty"`
 }
 
 type SearchConfig struct {
@@ -889,118 +894,211 @@ func (s *projectService) GetMapConfig(projectName string, user domain.User) (map
 
 // NUEVA función simplificada para extraer variables
 func (s *projectService) extractLayerVariables(projectName string, metaLayers map[string]domain.LayerMeta) map[string]interface{} {
-	s.log.Infow("🔍 [DEBUG] extractLayerVariables INICIADA", "project", projectName)
+	s.log.Infow("🔍 [extractLayerVariables] INICIANDO EXTRACCIÓN",
+		"project", projectName,
+		"metaLayersCount", len(metaLayers))
+
+	// Mostrar todas las capas del meta para diagnóstico
+	s.log.Infow("📋 [extractLayerVariables] CAPAS EN METADATA:")
+	for metaId, metaLayer := range metaLayers {
+		s.log.Infow("   📌 Meta Capa",
+			"metaId", metaId,
+			"metaName", metaLayer.Name,
+			"metaTitle", metaLayer.Title)
+	}
 
 	layerVariables := make(map[string]interface{})
 
-	// ✅ USAR NUEVO MÉTODO: Leer variables directamente del QGS/QGZ
-	varsFromQgs, err := s.repo.GetLayerVariables(projectName)
-	if err != nil {
-		s.log.Errorw("🚨 Error obteniendo variables del QGS/QGZ", "project", projectName, "error", err)
-	} else {
-		s.log.Infow("✅ Variables extraídas directamente del QGS/QGZ",
-			"project", projectName,
-			"layersCount", len(varsFromQgs))
+	// Usar el repositorio para obtener variables del QGS
+	if repo, ok := s.repo.(interface {
+		GetLayerVariables(string) (map[string]map[string]string, error)
+	}); ok {
+		varsFromQgs, err := repo.GetLayerVariables(projectName)
+		if err != nil {
+			s.log.Errorw("❌ [extractLayerVariables] Error obteniendo variables del QGS",
+				"project", projectName,
+				"error", err)
+		} else {
+			s.log.Infow("📊 [extractLayerVariables] Variables extraídas del QGS",
+				"project", projectName,
+				"qgsLayersWithVars", len(varsFromQgs))
 
-		// Convertir al formato esperado
-		for layerId, vars := range varsFromQgs {
-			if len(vars) > 0 {
-				// Buscar el ID correcto en los metadatos si es necesario
-				metaLayerId := s.findMatchingLayerId(layerId, metaLayers)
-				if metaLayerId == "" {
-					metaLayerId = layerId
-				}
-
-				layerVariables[metaLayerId] = vars
-				s.log.Infow("[extractLayerVariables] Variables encontradas en capa",
-					"project", projectName,
-					"layerId", metaLayerId,
-					"qgsLayerId", layerId,
-					"variables", vars)
+			// Mostrar todas las variables extraídas del QGS
+			s.log.Infow("🗂️ [extractLayerVariables] CAPAS DEL QGS CON VARIABLES:")
+			for qgsLayerId, variables := range varsFromQgs {
+				s.log.Infow("   🎯 QGS Capa",
+					"qgsLayerId", qgsLayerId,
+					"variables", variables)
 			}
-		}
-	}
 
-	return layerVariables
-}
+			// Intentar mapear IDs entre QGS y metadata
+			s.log.Infow("🔄 [extractLayerVariables] INICIANDO MAPEO DE IDs")
+			for qgsLayerId, variables := range varsFromQgs {
+				s.log.Infow("🔍 [extractLayerVariables] Buscando match para capa QGS",
+					"qgsLayerId", qgsLayerId)
 
-// A projects.go - Añadir método auxiliar
-func (s *projectService) findMatchingLayerId(qgsLayerId string, metaLayers map[string]domain.LayerMeta) string {
-	// Primero intentar match directo
-	if _, exists := metaLayers[qgsLayerId]; exists {
-		return qgsLayerId
-	}
+				matchFound := false
+				for metaId, metaLayer := range metaLayers {
+					// Estrategia 1: Match directo por ID
+					if qgsLayerId == metaId {
+						layerVariables[metaId] = variables
+						s.log.Infow("✅ [extractLayerVariables] MATCH DIRECTO por ID",
+							"qgsLayerId", qgsLayerId,
+							"metaId", metaId,
+							"variables", variables)
+						matchFound = true
+						break
+					}
 
-	// Extraer nombre de capa del ID (puede variar el formato)
-	parts := strings.Split(qgsLayerId, "_")
-	baseName := ""
-	if len(parts) > 0 {
-		baseName = parts[0]
-	}
+					// Estrategia 2: Match por nombre (normalizado)
+					qgsLayerIdNorm := strings.ToLower(strings.TrimSpace(qgsLayerId))
+					metaNameNorm := strings.ToLower(strings.TrimSpace(metaLayer.Name))
+					metaTitleNorm := strings.ToLower(strings.TrimSpace(metaLayer.Title))
 
-	// Buscar por coincidencia parcial
-	for id, layer := range metaLayers {
-		if strings.Contains(id, baseName) ||
-			strings.Contains(layer.Name, baseName) ||
-			strings.Contains(layer.Title, baseName) {
-			return id
-		}
-	}
+					if strings.Contains(qgsLayerIdNorm, metaNameNorm) ||
+						strings.Contains(metaNameNorm, qgsLayerIdNorm) ||
+						strings.Contains(qgsLayerIdNorm, metaTitleNorm) ||
+						strings.Contains(metaTitleNorm, qgsLayerIdNorm) {
+						layerVariables[metaId] = variables
+						s.log.Infow("✅ [extractLayerVariables] MATCH por NOMBRE",
+							"qgsLayerId", qgsLayerId,
+							"metaId", metaId,
+							"metaName", metaLayer.Name,
+							"metaTitle", metaLayer.Title,
+							"variables", variables)
+						matchFound = true
+						break
+					}
 
-	return ""
-}
-
-// integrateVariablesIntoLayers integra las variables directamente en cada capa
-func (s *projectService) integrateVariablesIntoLayers(layersData []any, layerVariables map[string]interface{}, metaLayers map[string]domain.LayerMeta) {
-	s.log.Infow("[integrateVariablesIntoLayers] Iniciando integración", "layersCount", len(layersData), "variablesCount", len(layerVariables))
-
-	for i, layerObj := range layersData {
-		s.log.Infow("[integrateVariablesIntoLayers] Procesando item", "index", i, "type", fmt.Sprintf("%T", layerObj))
-		switch layer := layerObj.(type) {
-		case map[string]interface{}:
-			// Si es una capa individual
-			if layerName, ok := layer["name"].(string); ok {
-				s.log.Infow("[integrateVariablesIntoLayers] Procesando capa", "index", i, "layerName", layerName)
-
-				// Buscar el ID de la capa basándose en el nombre
-				var layerId string
-				for id, metaLayer := range metaLayers {
-					if metaLayer.Name == layerName {
-						layerId = id
-						s.log.Infow("[integrateVariablesIntoLayers] Layer ID encontrado", "layerName", layerName, "layerId", layerId)
+					// Estrategia 3: Match por partes del ID
+					qgsLayerParts := strings.Split(qgsLayerId, "_")
+					for _, part := range qgsLayerParts {
+						if len(part) > 3 && (strings.Contains(metaNameNorm, strings.ToLower(part)) ||
+							strings.Contains(metaTitleNorm, strings.ToLower(part))) {
+							layerVariables[metaId] = variables
+							s.log.Infow("✅ [extractLayerVariables] MATCH por PARTE del ID",
+								"qgsLayerId", qgsLayerId,
+								"matchingPart", part,
+								"metaId", metaId,
+								"metaName", metaLayer.Name,
+								"variables", variables)
+							matchFound = true
+							break
+						}
+					}
+					if matchFound {
 						break
 					}
 				}
 
-				// Si encontramos el ID y tiene variables, integrarlas directamente
-				if layerId != "" {
-					if vars, hasVars := layerVariables[layerId].(map[string]interface{}); hasVars {
-						s.log.Infow("[integrateVariablesIntoLayers] Integrando variables", "layerName", layerName, "layerId", layerId, "variables", vars)
-						for varName, varValue := range vars {
-							layer[varName] = varValue
-							s.log.Infow("[integrateVariablesIntoLayers] Variable integrada", "layerName", layerName, "varName", varName, "varValue", varValue)
-						}
-					} else {
-						s.log.Infow("[integrateVariablesIntoLayers] No hay variables para esta capa", "layerName", layerName, "layerId", layerId)
-					}
-				} else {
-					s.log.Warnw("[integrateVariablesIntoLayers] No se encontró ID para la capa", "layerName", layerName)
+				if !matchFound {
+					s.log.Warnw("⚠️ [extractLayerVariables] NO SE ENCONTRÓ MATCH",
+						"qgsLayerId", qgsLayerId,
+						"availableMetaIds", func() []string {
+							ids := make([]string, 0, len(metaLayers))
+							for id := range metaLayers {
+								ids = append(ids, id)
+							}
+							return ids
+						}())
 				}
-			} else {
-				s.log.Infow("[integrateVariablesIntoLayers] Item sin nombre de capa", "index", i)
 			}
+		}
+	} else {
+		s.log.Warnw("⚠️ [extractLayerVariables] Repositorio no soporta GetLayerVariables",
+			"project", projectName)
+	}
 
-			// Si es un grupo, procesar recursivamente
-			if nestedLayers, ok := layer["layers"].([]any); ok {
-				s.log.Infow("[integrateVariablesIntoLayers] Procesando grupo recursivamente", "index", i, "nestedCount", len(nestedLayers))
-				s.integrateVariablesIntoLayers(nestedLayers, layerVariables, metaLayers)
-			}
+	s.log.Infow("🏁 [extractLayerVariables] EXTRACCIÓN COMPLETADA",
+		"project", projectName,
+		"totalVariablesIntegradas", len(layerVariables))
+
+	return layerVariables
+}
+
+// integrateVariablesIntoLayers integra las variables directamente en cada capa
+func (s *projectService) integrateVariablesIntoLayers(
+	layers []interface{},
+	layerVariables map[string]interface{},
+	metaLayers map[string]domain.LayerMeta) {
+
+	s.log.Infow("🔧 [integrateVariablesIntoLayers] INICIANDO INTEGRACIÓN",
+		"layersCount", len(layers),
+		"variablesCount", len(layerVariables))
+
+	for i, item := range layers {
+		s.log.Debugw("🔍 [integrateVariablesIntoLayers] Procesando item",
+			"index", i,
+			"itemType", fmt.Sprintf("%T", item))
+
+		switch layer := item.(type) {
+		case map[string]interface{}:
+			s.integrateVariablesInMap(layer, layerVariables, i)
+		case *OverlayLayer:
+			s.integrateVariablesInOverlay(layer, layerVariables, i)
 		default:
-			s.log.Warnw("[integrateVariablesIntoLayers] Item no es un mapa", "index", i, "type", fmt.Sprintf("%T", layerObj))
+			s.log.Debugw("🤷 [integrateVariablesIntoLayers] Tipo no soportado",
+				"index", i,
+				"type", fmt.Sprintf("%T", item))
 		}
 	}
 
-	s.log.Infow("[integrateVariablesIntoLayers] Integración completada")
+	s.log.Infow("🏁 [integrateVariablesIntoLayers] INTEGRACIÓN COMPLETADA")
+}
+
+// integrateVariablesInMap maneja capas como map[string]interface{}
+func (s *projectService) integrateVariablesInMap(layerMap map[string]interface{}, layerVariables map[string]interface{}, index int) {
+	layerName, _ := layerMap["name"].(string)
+	layerId, _ := layerMap["id"].(string)
+	qgisId, _ := layerMap["qgis_id"].(string)
+
+	s.log.Infow("🗂️ [integrateVariablesInMap] Procesando capa map",
+		"index", index,
+		"layerName", layerName,
+		"layerId", layerId,
+		"qgisId", qgisId)
+
+	// Buscar variables para esta capa
+	for varLayerId, variables := range layerVariables {
+		if varLayerId == layerId || varLayerId == qgisId {
+			if varsMap, ok := variables.(map[string]string); ok {
+				if qvSearch, exists := varsMap["qV_search"]; exists {
+					layerMap["qV_search"] = qvSearch
+					s.log.Infow("✅ [integrateVariablesInMap] Variable qV_search INTEGRADA en MAP",
+						"index", index,
+						"layerName", layerName,
+						"layerId", layerId,
+						"varLayerId", varLayerId,
+						"qV_search", qvSearch)
+				}
+			}
+		}
+	}
+}
+
+// integrateVariablesInOverlay maneja capas OverlayLayer
+func (s *projectService) integrateVariablesInOverlay(overlay *OverlayLayer, layerVariables map[string]interface{}, index int) {
+	s.log.Infow("🗂️ [integrateVariablesInOverlay] Procesando OverlayLayer",
+		"index", index,
+		"overlayName", overlay.Name,
+		"overlayQgisId", overlay.QgisId)
+
+	// Buscar variables para esta capa
+	for varLayerId, variables := range layerVariables {
+		if varLayerId == overlay.QgisId || strings.Contains(varLayerId, overlay.Name) {
+			if varsMap, ok := variables.(map[string]string); ok {
+				if qvSearch, exists := varsMap["qV_search"]; exists {
+					overlay.QVSearch = qvSearch
+					s.log.Infow("✅ [integrateVariablesInOverlay] Variable qV_search INTEGRADA en OVERLAY",
+						"index", index,
+						"overlayName", overlay.Name,
+						"overlayQgisId", overlay.QgisId,
+						"varLayerId", varLayerId,
+						"qV_search", qvSearch)
+				}
+			}
+		}
+	}
 }
 
 func (s *projectService) Close() {

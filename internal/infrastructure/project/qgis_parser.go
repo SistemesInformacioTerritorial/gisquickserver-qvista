@@ -79,16 +79,19 @@ func (p *QgisParser) extractQgsFromQgz(qgzPath string) ([]byte, error) {
 
 // parseQgsXml parsea el XML de QGS y extrae las variables de capa
 func (p *QgisParser) parseQgsXml(content []byte, projectName string) (map[string]map[string]string, error) {
+	p.log.Infow("📋 [parseQgsXml] Iniciando parseo de XML", "project", projectName, "xmlSize", len(content))
+
 	type Option struct {
 		Name    string   `xml:"name,attr"`
 		Value   string   `xml:"value,attr"`
+		Type    string   `xml:"type,attr"`
 		Options []Option `xml:"Option"`
 	}
 	type CustomProperties struct {
 		Options []Option `xml:"Option"`
 	}
 	type MapLayer struct {
-		ID               string           `xml:"id"`
+		ID               string           `xml:"id,attr"`
 		LayerName        string           `xml:"layername"`
 		CustomProperties CustomProperties `xml:"customproperties"`
 	}
@@ -98,34 +101,72 @@ func (p *QgisParser) parseQgsXml(content []byte, projectName string) (map[string
 	type Qgis struct {
 		ProjectLayers ProjectLayers `xml:"projectlayers"`
 	}
+
 	var doc Qgis
 	if err := xml.Unmarshal(content, &doc); err != nil {
 		return nil, fmt.Errorf("error parseando XML: %w", err)
 	}
+
+	p.log.Infow("🔍 [parseQgsXml] XML parseado correctamente",
+		"project", projectName,
+		"totalLayers", len(doc.ProjectLayers.Layers))
+
 	varsMap := make(map[string]map[string]string)
+
 	for _, layer := range doc.ProjectLayers.Layers {
+		p.log.Infow("🗂️ [parseQgsXml] Procesando capa del QGS",
+			"project", projectName,
+			"layerId", layer.ID,
+			"layerName", layer.LayerName)
+
 		varNames := []string{}
 		varValues := []string{}
+
+		// Buscar Option type="Map" (QGIS 3.x)
 		for _, opt := range layer.CustomProperties.Options {
-			if opt.Name == "variableNames" {
-				for _, o := range opt.Options {
-					varNames = append(varNames, o.Value)
-				}
-			}
-			if opt.Name == "variableValues" {
-				for _, o := range opt.Options {
-					varValues = append(varValues, o.Value)
+			if opt.Type == "Map" {
+				for _, subopt := range opt.Options {
+					if subopt.Name == "variableNames" {
+						for _, o := range subopt.Options {
+							varNames = append(varNames, o.Value)
+						}
+					}
+					if subopt.Name == "variableValues" {
+						for _, o := range subopt.Options {
+							varValues = append(varValues, o.Value)
+						}
+					}
 				}
 			}
 		}
+
+		p.log.Debugw("📊 [parseQgsXml] Variables encontradas en capa",
+			"project", projectName,
+			"layerId", layer.ID,
+			"layerName", layer.LayerName,
+			"varNames", varNames,
+			"varValues", varValues)
+
+		// Procesar variables encontradas
 		for i, name := range varNames {
 			if name == "qV_search" && i < len(varValues) {
 				if varsMap[layer.ID] == nil {
 					varsMap[layer.ID] = make(map[string]string)
 				}
 				varsMap[layer.ID]["qV_search"] = varValues[i]
+
+				p.log.Infow("✅ [parseQgsXml] Variable qV_search encontrada!",
+					"project", projectName,
+					"qgsLayerId", layer.ID,
+					"qgsLayerName", layer.LayerName,
+					"qV_search", varValues[i])
 			}
 		}
 	}
+
+	p.log.Infow("🏁 [parseQgsXml] Parseo completado",
+		"project", projectName,
+		"layersWithQVSearch", len(varsMap))
+
 	return varsMap, nil
 }

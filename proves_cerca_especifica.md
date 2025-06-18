@@ -32,7 +32,7 @@ if len(layerVariables) > 0 {
 
 Al QGIS, afegir variables a una capa:
 
-```
+```_
 Propietats de la capa → Variables →
 Nom: qV_search
 Valor: field="CODIGO" fieldtext="Código Parcela"

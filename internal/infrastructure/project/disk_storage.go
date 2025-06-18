@@ -1108,13 +1108,38 @@ func (s *DiskStorage) UpdateProject(projectName string) error {
 	return nil
 }
 
+// GetLayerVariables obtiene las variables de capas de un proyecto QGIS
 func (s *DiskStorage) GetLayerVariables(projectName string) (map[string]map[string]string, error) {
+	s.log.Infow("🔍 [DiskStorage.GetLayerVariables] Iniciando extracción", "project", projectName)
+
 	// Obtener información del proyecto para saber el nombre del archivo QGS/QGZ
 	projectInfo, err := s.GetProjectInfo(projectName)
 	if err != nil {
 		return nil, fmt.Errorf("error obteniendo info del proyecto: %w", err)
 	}
 
-	// Extraer variables del archivo QGS/QGZ
-	return s.qgisParser.ExtractLayerVariables(projectName, projectInfo.QgisFile)
+	if projectInfo.QgisFile == "" {
+		s.log.Warnw("⚠️ [DiskStorage.GetLayerVariables] Proyecto sin archivo QGS", "project", projectName)
+		return make(map[string]map[string]string), nil
+	}
+
+	s.log.Infow("📄 [DiskStorage.GetLayerVariables] Usando archivo QGS",
+		"project", projectName,
+		"qgsFile", projectInfo.QgisFile)
+
+	// Extraer variables del archivo QGS/QGZ usando el parser
+	variables, err := s.qgisParser.ExtractLayerVariables(projectName, projectInfo.QgisFile)
+	if err != nil {
+		s.log.Errorw("❌ [DiskStorage.GetLayerVariables] Error extrayendo variables",
+			"project", projectName,
+			"qgsFile", projectInfo.QgisFile,
+			"error", err)
+		return make(map[string]map[string]string), nil // Retornar mapa vacío en lugar de error
+	}
+
+	s.log.Infow("✅ [DiskStorage.GetLayerVariables] Variables extraídas correctamente",
+		"project", projectName,
+		"layersWithVariables", len(variables))
+
+	return variables, nil
 }
