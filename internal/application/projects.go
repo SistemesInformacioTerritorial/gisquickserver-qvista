@@ -438,8 +438,7 @@ type OverlayLayer struct {
 	Relations []map[string]any `json:"relations,omitempty"`
 	// Campos existentes...
 	QgisId string `json:"qgis_id"`
-	Name   string `json:"name"`
-	// Añadir este campo
+	// Name   string `json:"name"`  // ELIMINAR esta línea
 	QVSearch string `json:"qV_search,omitempty"`
 }
 
@@ -640,9 +639,29 @@ func (s *projectService) GetMapConfig(projectName string, user domain.User) (map
 		func(id string) interface{} {
 			lmeta := meta.Layers[id]
 			lset := settings.Layers[id]
+			layerName := lmeta.Name
+			if strings.TrimSpace(layerName) == "" && id != "" {
+				// Extraer parte sin el hash
+				parts := strings.Split(id, "_")
+				if len(parts) > 5 {
+					layerName = strings.Join(parts[:len(parts)-5], "_")
+
+					// AÑADIR ESTA PARTE: normalizar guiones bajos múltiples
+					for strings.Contains(layerName, "__") {
+						layerName = strings.ReplaceAll(layerName, "__", "_")
+					}
+				} else {
+					layerName = id
+				}
+			}
+			// Normalizar espacios (pero mantener guiones)
+			layerName = strings.ReplaceAll(layerName, " ", "_")
+			// NO REEMPLAZAR GUIONES:
+			// layerName = strings.ReplaceAll(layerName, "-", "_")
+
 			ldata := BaseLayer{
 				Layer: Layer{
-					Name:             lmeta.Name,
+					Name:             layerName, // <-- Ahora siempre tendrá valor
 					Title:            lmeta.Title,
 					Type:             lmeta.Type,
 					Projection:       lmeta.Projection,
@@ -708,9 +727,29 @@ func (s *projectService) GetMapConfig(projectName string, user domain.User) (map
 					relations[offset+i] = r
 				}
 			}
+			layerName := lmeta.Name
+			if strings.TrimSpace(layerName) == "" && id != "" {
+				// Extraer parte sin el hash
+				parts := strings.Split(id, "_")
+				if len(parts) > 5 {
+					layerName = strings.Join(parts[:len(parts)-5], "_")
+
+					// AÑADIR ESTA PARTE: normalizar guiones bajos múltiples
+					for strings.Contains(layerName, "__") {
+						layerName = strings.ReplaceAll(layerName, "__", "_")
+					}
+				} else {
+					layerName = id
+				}
+			}
+			// Normalizar espacios (pero mantener guiones)
+			layerName = strings.ReplaceAll(layerName, " ", "_")
+			// NO REEMPLAZAR GUIONES:
+			// layerName = strings.ReplaceAll(layerName, "-", "_")
+
 			ldata := OverlayLayer{
 				Layer: Layer{
-					Name:             lmeta.Name,
+					Name:             layerName,
 					Title:            lmeta.Title,
 					Projection:       lmeta.Projection,
 					Type:             lmeta.Type,
@@ -724,12 +763,12 @@ func (s *projectService) GetMapConfig(projectName string, user domain.User) (map
 					Provider:         lmeta.Provider,
 					SourceParams:     lmeta.SourceParams,
 				},
-				Bands: lmeta.Bands,
-
+				Bands:     lmeta.Bands,
 				Relations: relations,
 				Hidden:    lset.Flags.Has("hidden"),
 				Queryable: queryable,
 				InfoPanel: lset.InfoPanelComponent,
+				QgisId:    id, // <-- CRÍTICO: Añade esta línea
 			}
 
 			drawingOrder := -1
@@ -1146,41 +1185,8 @@ func (s *projectService) integrateVariablesInOverlayValue(overlay *OverlayLayer,
 		"overlayQgisId", overlay.QgisId,
 		"overlayTitle", overlay.Title)
 
-	// 🔧 DIAGNÓSTICO: Si el QgisId está vacío, intentar encontrarlo por nombre/título
+	// 🔧 NO modificar overlay.Name aquí, solo añadir QVSearch si existe
 	actualQgisId := overlay.QgisId
-	if actualQgisId == "" {
-		s.log.Warnw("⚠️ [integrateVariablesInOverlayValue] QgisId está vacío, buscando por nombre",
-			"index", index,
-			"overlayName", overlay.Name,
-			"overlayTitle", overlay.Title)
-
-		// Intentar encontrar por título en las variables disponibles
-		for varId, variables := range layerVariables {
-			if varsMap, ok := variables.(map[string]string); ok {
-				if layerName, hasLayerName := varsMap["layerName"]; hasLayerName {
-					s.log.Debugw("🔍 [integrateVariablesInOverlayValue] Comparando nombres",
-						"varId", varId,
-						"qgsLayerName", layerName,
-						"overlayName", overlay.Name,
-						"overlayTitle", overlay.Title)
-
-					// ✅ COMPARAR CON TÍTULO (que SÍ tiene valor)
-					if layerName == overlay.Title {
-						actualQgisId = varId
-						// ✅ ASIGNAR TAMBIÉN LOS CAMPOS VACÍOS
-						overlay.QgisId = varId
-						overlay.Name = layerName
-
-						s.log.Infow("🔧 [integrateVariablesInOverlayValue] QgisId encontrado por nombre",
-							"index", index,
-							"foundQgisId", actualQgisId,
-							"matchedLayerName", layerName)
-						break
-					}
-				}
-			}
-		}
-	}
 
 	// Buscar variables para esta capa
 	if variables, exists := layerVariables[actualQgisId]; exists {
@@ -1198,37 +1204,8 @@ func (s *projectService) integrateVariablesInOverlayValue(overlay *OverlayLayer,
 					"overlayName", overlay.Name,
 					"qgisId", overlay.QgisId,
 					"qV_search", qvSearch)
-			} else {
-				s.log.Warnw("⚠️ [integrateVariablesInOverlayValue] No hay qV_search en variables",
-					"index", index,
-					"qgisId", actualQgisId,
-					"availableVars", func() []string {
-						keys := make([]string, 0, len(varsMap))
-						for k := range varsMap {
-							keys = append(keys, k)
-						}
-						return keys
-					}())
 			}
-		} else {
-			s.log.Warnw("⚠️ [integrateVariablesInOverlayValue] Variables no son del tipo esperado",
-				"index", index,
-				"qgisId", actualQgisId,
-				"variablesType", fmt.Sprintf("%T", variables))
 		}
-	} else {
-		s.log.Warnw("⚠️ [integrateVariablesInOverlayValue] No hay variables para QgisId",
-			"index", index,
-			"qgisId", actualQgisId,
-			"overlayName", overlay.Name,
-			"overlayTitle", overlay.Title,
-			"availableIds", func() []string {
-				ids := make([]string, 0, len(layerVariables))
-				for id := range layerVariables {
-					ids = append(ids, id)
-				}
-				return ids
-			}())
 	}
 }
 
