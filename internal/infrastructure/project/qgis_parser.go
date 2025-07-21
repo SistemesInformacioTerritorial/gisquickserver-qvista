@@ -216,18 +216,18 @@ func (p *QgisParser) parseQgsXml(content []byte, projectName string) (map[string
 
 		// Procesar variables encontradas
 		for i, name := range varNames {
-			if name == "qV_search" && i < len(varValues) {
+			if strings.HasPrefix(name, "qV_search") && i < len(varValues) {
 				if varsMap[layerId] == nil {
 					varsMap[layerId] = make(map[string]string)
 				}
-				varsMap[layerId]["qV_search"] = varValues[i]
-				varsMap[layerId]["layerName"] = layer.LayerName
+				varsMap[layerId][name] = varValues[i]
 
-				p.log.Infow("✅ [parseQgsXml] Variable qV_search encontrada!",
+				p.log.Infow("✅ [parseQgsXml] Variable qV_* encontrada!",
 					"project", projectName,
 					"qgsLayerId", layerId,
 					"qgsLayerName", layer.LayerName,
-					"qV_search", varValues[i])
+					"varName", name,
+					"varValue", varValues[i])
 			}
 		}
 	}

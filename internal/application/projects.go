@@ -56,17 +56,18 @@ type AccountsLimiter interface {
 }
 
 type projectService struct {
-	log     *zap.SugaredLogger
-	repo    domain.ProjectsRepository
-	limiter AccountsLimiter
-	// cache *ttlcache.Cache
+	log              *zap.SugaredLogger
+	repo             domain.ProjectsRepository
+	limiter          AccountsLimiter
+	variablesManager *LayerVariablesManager
 }
 
 func NewProjectsService(log *zap.SugaredLogger, repo domain.ProjectsRepository, limiter AccountsLimiter) *projectService {
 	return &projectService{
-		log:     log,
-		repo:    repo,
-		limiter: limiter,
+		log:              log,
+		repo:             repo,
+		limiter:          limiter,
+		variablesManager: NewLayerVariablesManager(log),
 	}
 }
 
@@ -415,10 +416,10 @@ type Layer struct {
 
 type BaseLayer struct {
 	Layer
-	// WMS params, old API
-	URL       string   `json:"url"`
-	Format    string   `json:"format"`
-	WmsLayers []string `json:"wms_layers"`
+	URL       string            `json:"url"`
+	Format    string            `json:"format"`
+	WmsLayers []string          `json:"wms_layers"`
+	Variables map[string]string `json:"variables,omitempty"` // NUEVO: Variables qV_*
 }
 
 type OverlayLayer struct {
@@ -434,12 +435,10 @@ type OverlayLayer struct {
 	AttributeTableFields []string                `json:"attr_table_fields,omitempty"`
 	InfoPanelFields      []string                `json:"info_panel_fields,omitempty"`
 	ExportFields         []string                `json:"export_fields,omitempty"`
-	// Relations            json.RawMessage         `json:"relations,omitempty"`
-	Relations []map[string]any `json:"relations,omitempty"`
-	// Campos existentes...
-	QgisId string `json:"qgis_id"`
-	// Name   string `json:"name"`  // ELIMINAR esta línea
-	QVSearch string `json:"qV_search,omitempty"`
+	Relations            []map[string]any        `json:"relations,omitempty"`
+	QgisId               string                  `json:"qgis_id"`
+	QVSearch             string                  `json:"qV_search,omitempty"`
+	Variables            map[string]string       `json:"variables,omitempty"` // NUEVO: Todas las variables qV_*
 }
 
 type SearchConfig struct {
@@ -886,10 +885,10 @@ func (s *projectService) GetMapConfig(projectName string, user domain.User) (map
 	data["ows_project"] = projectName
 
 	// EXTRAER VARIABLES DE CAPA DEL ARCHIVO QGS/QGZ
-	layerVariables := s.extractLayerVariables(projectName, meta.Layers)
+	layerVariables := s.variablesManager.ExtractLayerVariables(projectName, meta.Layers, s.repo)
 	if len(layerVariables) > 0 {
-		s.integrateVariablesIntoLayers(layers, layerVariables, meta.Layers)
-		s.integrateVariablesIntoLayers(baseLayersData, layerVariables, meta.Layers)
+		s.variablesManager.IntegrateVariablesIntoLayers(layers, layerVariables, meta.Layers)
+		s.variablesManager.IntegrateVariablesIntoLayers(baseLayersData, layerVariables, meta.Layers)
 	}
 
 	topics := make([]domain.Topic, 0)
