@@ -2,6 +2,7 @@ package application
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/gisquick/gisquick-server/internal/domain"
@@ -239,7 +240,6 @@ func (lvm *LayerVariablesManager) integrateVariablesInOverlayValue(overlay *Over
 		"overlayQgisId", overlay.QgisId,
 		"overlayTitle", overlay.Title)
 
-	// El problema es aquí - overlay.QgisId está vacío
 	actualQgisId := overlay.QgisId
 
 	// ✅ SOLUCIÓN: Buscar el ID correcto por título cuando QgisId está vacío
@@ -285,11 +285,19 @@ func (lvm *LayerVariablesManager) integrateVariablesInOverlayValue(overlay *Over
 			// Procesar todas las variables que empiecen por qV_search
 			for key, value := range varsMap {
 				if strings.HasPrefix(key, "qV_search") {
-					qvVariables[key] = value
+					// ✅ NORMALIZAR VARIABLE PARA COMPATIBILIDAD
+					normalizedValue := lvm.normalizeQVSearchValue(value, overlay.Title)
+					qvVariables[key] = normalizedValue
 
 					// Mantener compatibilidad con qV_search original
 					if key == "qV_search" {
-						overlay.QVSearch = value
+						overlay.QVSearch = normalizedValue
+						lvm.log.Infow("✅ [integrateVariablesInOverlayValue] Variable qV_search INTEGRADA",
+							"index", index,
+							"overlayName", overlay.Name,
+							"qgisId", overlay.QgisId,
+							"originalValue", value,
+							"normalizedValue", normalizedValue)
 					}
 				}
 			}
@@ -306,4 +314,92 @@ func (lvm *LayerVariablesManager) integrateVariablesInOverlayValue(overlay *Over
 			}
 		}
 	}
+}
+
+// ✅ NUEVA FUNCIÓN: Normaliza la variable qV_search para compatibilidad con el frontend
+func (lvm *LayerVariablesManager) normalizeQVSearchValue(value string, layerTitle string) string {
+	lvm.log.Debugw("🔄 [normalizeQVSearch] Procesando valor",
+		"originalValue", value,
+		"layerTitle", layerTitle)
+
+	// Si está vacío, usar valor por defecto
+	if strings.TrimSpace(value) == "" {
+		defaultValue := fmt.Sprintf("field=\"NAME\" fieldText=\"%s\" desc=\"Introduïu %s\"", layerTitle, layerTitle)
+		lvm.log.Warnw("⚠️ [normalizeQVSearch] Valor vacío, usando valor por defecto",
+			"defaultValue", defaultValue)
+		return defaultValue
+	}
+
+	// Comprobar si tiene field (obligatorio)
+	hasField := strings.Contains(value, "field=\"")
+	if !hasField {
+		// No tiene field, devolver valor por defecto
+		defaultValue := fmt.Sprintf("field=\"NAME\" fieldText=\"%s\" desc=\"Introduïu %s\"", layerTitle, layerTitle)
+		lvm.log.Warnw("⚠️ [normalizeQVSearch] No tiene campo field, usando valor por defecto",
+			"originalValue", value,
+			"defaultValue", defaultValue)
+		return defaultValue
+	}
+
+	result := value
+
+	// Convertir fieldtext a fieldText si existe
+	if strings.Contains(result, "fieldtext=\"") {
+		oldValue := result
+		result = strings.Replace(result, "fieldtext=\"", "fieldText=\"", -1)
+		lvm.log.Infow("🔄 [normalizeQVSearch] Convertido fieldtext a fieldText",
+			"before", oldValue,
+			"after", result)
+	}
+
+	// Si no tiene fieldText, extraer field y agregarlo
+	if !strings.Contains(result, "fieldText=\"") {
+		// Extraer el valor del campo field
+		fieldRegex := regexp.MustCompile(`field="([^"]+)"`)
+		fieldMatch := fieldRegex.FindStringSubmatch(result)
+
+		fieldValue := ""
+		if len(fieldMatch) >= 2 {
+			fieldValue = fieldMatch[1]
+		}
+
+		// Usar field como fieldText o el título de la capa si está vacío
+		fieldTextValue := fieldValue
+		if strings.TrimSpace(fieldTextValue) == "" {
+			fieldTextValue = layerTitle
+		}
+
+		oldValue := result
+		result = result + fmt.Sprintf(" fieldText=\"%s\"", fieldTextValue)
+		lvm.log.Infow("➕ [normalizeQVSearch] Agregado fieldText que faltaba",
+			"before", oldValue,
+			"after", result,
+			"fieldValue", fieldValue,
+			"fieldTextValue", fieldTextValue)
+	}
+
+	// Si no tiene desc, extraer fieldText y agregarlo
+	if !strings.Contains(result, "desc=\"") {
+		// Extraer fieldText para usarlo en la descripción
+		fieldTextRegex := regexp.MustCompile(`fieldText="([^"]+)"`)
+		fieldTextMatch := fieldTextRegex.FindStringSubmatch(result)
+
+		descValue := layerTitle
+		if len(fieldTextMatch) >= 2 && fieldTextMatch[1] != "" {
+			descValue = fieldTextMatch[1]
+		}
+
+		oldValue := result
+		result = result + fmt.Sprintf(" desc=\"Introduïu %s\"", descValue)
+		lvm.log.Infow("➕ [normalizeQVSearch] Agregada descripción que faltaba",
+			"before", oldValue,
+			"after", result,
+			"descValue", fmt.Sprintf("Introduïu %s", descValue))
+	}
+
+	lvm.log.Infow("✅ [normalizeQVSearch] Normalización completada",
+		"originalValue", value,
+		"normalizedValue", result)
+
+	return result
 }
