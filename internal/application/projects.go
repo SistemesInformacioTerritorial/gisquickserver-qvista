@@ -438,7 +438,8 @@ type OverlayLayer struct {
 	Relations            []map[string]any        `json:"relations,omitempty"`
 	QgisId               string                  `json:"qgis_id"`
 	QVSearch             string                  `json:"qV_search,omitempty"`
-	Variables            map[string]string       `json:"variables,omitempty"` // NUEVO: Todas las variables qV_*
+	Variables            map[string]string       `json:"variables,omitempty"`
+	Layers               interface{}             `json:"layers,omitempty"` // <-- Añade esto si lo necesitas
 }
 
 type SearchConfig struct {

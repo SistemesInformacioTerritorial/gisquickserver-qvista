@@ -127,6 +127,24 @@ func (lvm *LayerVariablesManager) IntegrateVariablesIntoLayers(
 			"variables", variables)
 	}
 
+	// Antes de procesar las capas
+	lvm.log.Infow("🔍 [IntegrateVariablesIntoLayers] Estructura de capas a procesar:",
+		"layersCount", len(layers))
+
+	// Recorrer estructura para mostrar grupos y capas (solo para diagnóstico)
+	for i, layer := range layers {
+		switch l := layer.(type) {
+		case map[string]interface{}:
+			name, _ := l["name"].(string)
+			qgisId, _ := l["qgis_id"].(string)
+			lvm.log.Infow("   📂 Capa/Grupo encontrado",
+				"index", i,
+				"name", name,
+				"qgisId", qgisId,
+				"hasLayers", l["layers"] != nil)
+		}
+	}
+
 	// Integrar variables en cada capa
 	for i, layer := range layers {
 		lvm.log.Debugw("🔍 [IntegrateVariablesIntoLayers] Procesando item",
@@ -162,7 +180,7 @@ func (lvm *LayerVariablesManager) integrateVariablesInMap(layerMap map[string]in
 		"qgisId", qgisId)
 
 	// Buscar variables para esta capa por qgis_id
-	if variables, exists := layerVariables[qgisId]; exists {
+	if variables, exists := layerVariables[qgisId]; exists && qgisId != "" {
 		if varsMap, ok := variables.(map[string]string); ok {
 			// Crear mapa para todas las variables qV_*
 			qvVariables := make(map[string]string)
@@ -191,6 +209,29 @@ func (lvm *LayerVariablesManager) integrateVariablesInMap(layerMap map[string]in
 			}
 		}
 	}
+
+	// Verificar si este elemento tiene subcapas
+	if subcapas, ok := layerMap["layers"].([]interface{}); ok && len(subcapas) > 0 {
+		for i, subcapa := range subcapas {
+			switch sc := subcapa.(type) {
+			case map[string]interface{}:
+				lvm.integrateVariablesInMap(sc, layerVariables, index*100+i)
+			case *OverlayLayer:
+				lvm.integrateVariablesInOverlay(sc, layerVariables, index*100+i)
+			case OverlayLayer:
+				// Manejar el caso de OverlayLayer por valor
+				lvm.integrateVariablesInOverlayValue(&sc, layerVariables, index*100+i)
+				// Actualizar la referencia en el slice original
+				if i < len(subcapas) {
+					subcapas[i] = sc
+				}
+			default:
+				lvm.log.Debugw("⚠️ [integrateVariablesInMap] Tipo de subcapa no soportado",
+					"index", index*100+i,
+					"type", fmt.Sprintf("%T", subcapa))
+			}
+		}
+	}
 }
 
 // integrateVariablesInOverlay maneja capas OverlayLayer por puntero
@@ -203,22 +244,15 @@ func (lvm *LayerVariablesManager) integrateVariablesInOverlay(overlay *OverlayLa
 	// Buscar variables para esta capa por QgisId
 	if variables, exists := layerVariables[overlay.QgisId]; exists {
 		if varsMap, ok := variables.(map[string]string); ok {
-			// Crear mapa para todas las variables qV_*
 			qvVariables := make(map[string]string)
-
-			// Procesar todas las variables que empiecen por qV_search
 			for key, value := range varsMap {
 				if strings.HasPrefix(key, "qV_search") {
 					qvVariables[key] = value
-
-					// Mantener compatibilidad con qV_search original
 					if key == "qV_search" {
 						overlay.QVSearch = value
 					}
 				}
 			}
-
-			// Agregar el mapa completo de variables si hay alguna
 			if len(qvVariables) > 0 {
 				overlay.Variables = qvVariables
 				lvm.log.Infow("✅ [integrateVariablesInOverlay] Variables qV_* INTEGRADAS",
@@ -228,6 +262,32 @@ func (lvm *LayerVariablesManager) integrateVariablesInOverlay(overlay *OverlayLa
 					"variablesCount", len(qvVariables),
 					"variables", qvVariables)
 			}
+		}
+	}
+
+	// 🔴 PROCESAR SUBCAPAS RECURSIVAMENTE
+	if overlay.Layers != nil {
+		if layersSlice, ok := overlay.Layers.([]interface{}); ok && len(layersSlice) > 0 {
+			for i, sub := range layersSlice {
+				switch sc := sub.(type) {
+				case map[string]interface{}:
+					lvm.integrateVariablesInMap(sc, layerVariables, index*100+i)
+				case *OverlayLayer:
+					lvm.integrateVariablesInOverlay(sc, layerVariables, index*100+i)
+				case OverlayLayer:
+					// Manejar el caso de OverlayLayer por valor
+					lvm.integrateVariablesInOverlayValue(&sc, layerVariables, index*100+i)
+					// Actualizar la referencia en el slice original
+					layersSlice[i] = sc
+				default:
+					lvm.log.Debugw("⚠️ [integrateVariablesInOverlay] Tipo de subcapa no soportado",
+						"index", index*100+i,
+						"type", fmt.Sprintf("%T", sub))
+				}
+			}
+		} else {
+			lvm.log.Debugw("🔍 [integrateVariablesInOverlay] Layers no es un slice o está vacío",
+				"layersType", fmt.Sprintf("%T", overlay.Layers))
 		}
 	}
 }
@@ -244,32 +304,33 @@ func (lvm *LayerVariablesManager) integrateVariablesInOverlayValue(overlay *Over
 
 	// ✅ SOLUCIÓN: Buscar el ID correcto por título cuando QgisId está vacío
 	if actualQgisId == "" {
+		normalizedTitle := strings.ToLower(strings.ReplaceAll(overlay.Title, " ", "_"))
+
 		// Recorrer layerVariables buscando coincidencia por título
 		for varId, variables := range layerVariables {
+			normalizedVarId := strings.ToLower(varId)
+
 			if varsMap, ok := variables.(map[string]string); ok {
-				// Si la capa tiene una variable "layerName" que coincide con el título
-				if layerName, hasLayerName := varsMap["layerName"]; hasLayerName && layerName == overlay.Title {
-					actualQgisId = varId   // Usar este ID
-					overlay.QgisId = varId // Y actualizarlo en la estructura
-					lvm.log.Infow("🔧 ID encontrado por coincidencia de título",
+				// 1. Coincidencia exacta por layerName
+				if layerName, hasLayerName := varsMap["layerName"]; hasLayerName &&
+					strings.EqualFold(layerName, overlay.Title) {
+					actualQgisId = varId
+					overlay.QgisId = varId
+					lvm.log.Infow("🔧 ID encontrado por coincidencia exacta de título",
 						"layerTitle", overlay.Title,
 						"foundId", varId)
 					break
 				}
-			}
-		}
 
-		// Si aún no se encontró, buscar por coincidencia parcial o ID directo
-		if actualQgisId == "" {
-			for varId := range layerVariables {
-				// Si el ID de la variable contiene el título de la capa
-				if strings.Contains(varId, overlay.Title) ||
-					strings.Contains(varId, strings.ReplaceAll(overlay.Title, " ", "_")) {
+				// 2. Coincidencia por ID normalizado
+				if strings.Contains(normalizedVarId, normalizedTitle) {
 					actualQgisId = varId
 					overlay.QgisId = varId
-					lvm.log.Infow("🔧 ID encontrado por coincidencia parcial",
+					lvm.log.Infow("🔧 ID encontrado por coincidencia parcial normalizada",
 						"layerTitle", overlay.Title,
-						"foundId", varId)
+						"normalizedTitle", normalizedTitle,
+						"varId", varId,
+						"normalizedVarId", normalizedVarId)
 					break
 				}
 			}
@@ -403,3 +464,30 @@ func (lvm *LayerVariablesManager) normalizeQVSearchValue(value string, layerTitl
 
 	return result
 }
+
+// // integrateVariablesInMap maneja capas como map[string]interface{}
+// func integrateVariablesInMap(layerMap map[string]interface{}, variablesByLayerId map[string]map[string]string) {
+// 	// Obtener el qgisId de la capa actual
+// 	qgisId, _ := layerMap["qgis_id"].(string)
+
+// 	// Verificar si hay variables para esta capa
+// 	if qgisId != "" {
+// 		if vars, ok := variablesByLayerId[qgisId]; ok {
+// 			// Integrar variables en esta capa
+// 			for varName, varValue := range vars {
+// 				layerMap[varName] = varValue
+// 			}
+// 			// Agregar también el objeto completo de variables
+// 			layerMap["variables"] = vars
+// 		}
+// 	}
+
+// 	// Verificar si este elemento tiene subcapas y procesarlas recursivamente
+// 	if subcapas, ok := layerMap["layers"].([]interface{}); ok && len(subcapas) > 0 {
+// 		for _, subcapa := range subcapas {
+// 			if subcapaMap, isMap := subcapa.(map[string]interface{}); isMap {
+// 				integrateVariablesInMap(subcapaMap, variablesByLayerId)
+// 			}
+// 		}
+// 	}
+// }
