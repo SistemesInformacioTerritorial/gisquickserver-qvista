@@ -11,7 +11,8 @@ import (
 
 // LayerVariablesManager gestiona la extracción e integración de variables de capa
 type LayerVariablesManager struct {
-	log *zap.SugaredLogger
+	log     *zap.SugaredLogger
+	actions map[string][]LayerAction // Mapa de layerId -> acciones
 }
 
 // NewLayerVariablesManager crea un nuevo gestor de variables de capa
@@ -26,7 +27,7 @@ func (lvm *LayerVariablesManager) ExtractLayerVariables(
 	projectName string,
 	metaLayers map[string]domain.LayerMeta,
 	repo interface{},
-) map[string]interface{} {
+) (map[string]interface{}, map[string][]LayerAction) {
 	lvm.log.Infow("🔍 [ExtractLayerVariables] INICIANDO EXTRACCIÓN",
 		"project", projectName,
 		"metaLayersCount", len(metaLayers))
@@ -41,12 +42,13 @@ func (lvm *LayerVariablesManager) ExtractLayerVariables(
 	}
 
 	layerVariables := make(map[string]interface{})
+	//layerActions := make(map[string][]LayerAction)
 
-	// Usar el repositorio para obtener variables del QGS
+	// Usar el repositorio para obtener variables y acciones del QGS
 	if repoWithVars, ok := repo.(interface {
-		GetLayerVariables(string) (map[string]map[string]string, error)
+		GetLayerActionsAndVariables(string) (map[string]map[string]string, []LayerAction, error)
 	}); ok {
-		varsFromQgs, err := repoWithVars.GetLayerVariables(projectName)
+		varsFromQgs, actions, err := repoWithVars.GetLayerActionsAndVariables(projectName)
 		if err != nil {
 			lvm.log.Errorw("❌ [ExtractLayerVariables] Error obteniendo variables del QGS",
 				"project", projectName,
@@ -97,6 +99,77 @@ func (lvm *LayerVariablesManager) ExtractLayerVariables(
 				}
 			}
 		}
+
+		// Procesar acciones
+		layerActions := make(map[string][]LayerAction)
+		for _, action := range actions {
+			if _, exists := layerActions[action.LayerId]; !exists {
+				layerActions[action.LayerId] = make([]LayerAction, 0)
+			}
+			layerActions[action.LayerId] = append(layerActions[action.LayerId], action)
+		}
+
+		lvm.actions = layerActions
+
+		lvm.log.Infow("🎯 [ExtractLayerVariables] Acciones extraídas",
+			"project", projectName,
+			"actionsCount", len(actions),
+			"layersWithActions", len(layerActions))
+	} else if repoWithVars, ok := repo.(interface {
+		GetLayerVariables(string) (map[string]map[string]string, error)
+	}); ok {
+		// Soporte para repositorios antiguos que solo tienen GetLayerVariables
+		varsFromQgs, err := repoWithVars.GetLayerVariables(projectName)
+		if err != nil {
+			lvm.log.Errorw("❌ [ExtractLayerVariables] Error obteniendo variables del QGS",
+				"project", projectName,
+				"error", err)
+		} else {
+			lvm.log.Infow("📊 [ExtractLayerVariables] Variables extraídas del QGS (modo legado)",
+				"project", projectName,
+				"qgsLayersWithVars", len(varsFromQgs))
+
+			// Mostrar todas las variables extraídas del QGS
+			lvm.log.Infow("🗂️ [ExtractLayerVariables] CAPAS DEL QGS CON VARIABLES:")
+			for qgsLayerId, variables := range varsFromQgs {
+				lvm.log.Infow("   🎯 QGS Capa",
+					"qgsLayerId", qgsLayerId,
+					"variables", variables)
+			}
+
+			// ✅ MAPEO DIRECTO - EL PARSER YA DEVUELVE LOS IDs CORRECTOS
+			lvm.log.Infow("🔄 [ExtractLayerVariables] INICIANDO MAPEO DIRECTO (modo legado)")
+			for qgsLayerId, variables := range varsFromQgs {
+				// Verificar si existe en metadata
+				if _, exists := metaLayers[qgsLayerId]; exists {
+					// Filtrar solo las variables que empiezan por qV_search
+					filteredVars := make(map[string]string)
+					for key, value := range variables {
+						if strings.HasPrefix(key, "qV_search") {
+							filteredVars[key] = value
+						}
+					}
+
+					// Solo agregar si hay variables filtradas
+					if len(filteredVars) > 0 {
+						layerVariables[qgsLayerId] = filteredVars
+						lvm.log.Infow("✅ [ExtractLayerVariables] MATCH DIRECTO (modo legado)",
+							"qgsLayerId", qgsLayerId,
+							"variables", filteredVars)
+					}
+				} else {
+					lvm.log.Warnw("⚠️ [ExtractLayerVariables] Capa QGS no encontrada en metadata (modo legado)",
+						"qgsLayerId", qgsLayerId,
+						"availableMetaIds", func() []string {
+							ids := make([]string, 0, len(metaLayers))
+							for id := range metaLayers {
+								ids = append(ids, id)
+							}
+							return ids
+						}())
+				}
+			}
+		}
 	} else {
 		lvm.log.Warnw("⚠️ [ExtractLayerVariables] Repositorio no soporta GetLayerVariables",
 			"project", projectName)
@@ -106,7 +179,7 @@ func (lvm *LayerVariablesManager) ExtractLayerVariables(
 		"project", projectName,
 		"totalVariablesIntegradas", len(layerVariables))
 
-	return layerVariables
+	return layerVariables, lvm.actions
 }
 
 // IntegrateVariablesIntoLayers integra las variables directamente en cada capa

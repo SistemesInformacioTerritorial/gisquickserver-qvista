@@ -439,7 +439,21 @@ type OverlayLayer struct {
 	QgisId               string                  `json:"qgis_id"`
 	QVSearch             string                  `json:"qV_search,omitempty"`
 	Variables            map[string]string       `json:"variables,omitempty"`
-	Layers               interface{}             `json:"layers,omitempty"` // <-- Añade esto si lo necesitas
+	Layers               interface{}             `json:"layers,omitempty"`
+	Actions              []LayerAction           `json:"actions,omitempty"` // Nuevo campo
+}
+
+// LayerAction representa una acción definida en QGIS para una capa
+type LayerAction struct {
+	Id          string `json:"id"`
+	Name        string `json:"name"`
+	ActionType  string `json:"action_type"`
+	ActionText  string `json:"action_text"`
+	Description string `json:"description,omitempty"`
+	Capture     bool   `json:"capture_output,omitempty"`
+	ShortTitle  string `json:"short_title,omitempty"`
+	Icon        string `json:"icon,omitempty"`
+	LayerId     string `json:"layer_id"` // Asegurar que este campo existe
 }
 
 type SearchConfig struct {
@@ -885,11 +899,21 @@ func (s *projectService) GetMapConfig(projectName string, user domain.User) (map
 	data["ows_url"] = fmt.Sprintf("/api/map/ows/%s", projectName)
 	data["ows_project"] = projectName
 
-	// EXTRAER VARIABLES DE CAPA DEL ARCHIVO QGS/QGZ
-	layerVariables := s.variablesManager.ExtractLayerVariables(projectName, meta.Layers, s.repo)
+	// EXTRAER VARIABLES Y ACCIONES DEL ARCHIVO QGS/QGZ
+	layerVariables, layerActions := s.variablesManager.ExtractLayerVariables(projectName, meta.Layers, s.repo)
+
+	// Integrar variables en las capas
 	if len(layerVariables) > 0 {
 		s.variablesManager.IntegrateVariablesIntoLayers(layers, layerVariables, meta.Layers)
 		s.variablesManager.IntegrateVariablesIntoLayers(baseLayersData, layerVariables, meta.Layers)
+	}
+
+	// Integrar acciones en las capas
+	if len(layerActions) > 0 {
+		s.integrateActionsIntoLayers(layers, layerActions)
+		s.log.Infow("🎯 [GetMapConfig] Acciones integradas",
+			"projectName", projectName,
+			"layersWithActions", len(layerActions))
 	}
 
 	topics := make([]domain.Topic, 0)
@@ -1218,4 +1242,89 @@ func (s *projectService) Close() {
 // A projects.go - afegir aquest mètode
 func (s *projectService) SetRepo(repo domain.ProjectsRepository) {
 	s.repo = repo
+}
+
+// Añadir esta nueva función
+func (s *projectService) integrateActionsIntoLayers(layers []interface{}, layerActions map[string][]LayerAction) {
+	s.log.Infow("🔧 [integrateActionsIntoLayers] INICIANDO INTEGRACIÓN",
+		"layersCount", len(layers),
+		"layersWithActions", len(layerActions))
+
+	// Procesar cada capa
+	for i, layer := range layers {
+		switch l := layer.(type) {
+		case map[string]interface{}:
+			s.integrateActionsInMap(l, layerActions)
+		case *OverlayLayer:
+			s.integrateActionsInOverlay(l, layerActions)
+		case OverlayLayer:
+			// trabajar sobre copia y reasignar el valor modificado
+			tmp := l
+			s.integrateActionsInOverlay(&tmp, layerActions)
+			layers[i] = tmp
+		}
+	}
+}
+
+// Funciones auxiliares para integrar acciones
+func (s *projectService) integrateActionsInMap(layerMap map[string]interface{}, layerActions map[string][]LayerAction) {
+	qgisId, _ := layerMap["qgis_id"].(string)
+	if qgisId != "" {
+		if actions, exists := layerActions[qgisId]; exists && len(actions) > 0 {
+			layerMap["actions"] = actions
+			s.log.Infow("✅ [integrateActionsInMap] Acciones integradas en capa Map",
+				"layerId", qgisId,
+				"actionsCount", len(actions))
+		}
+	}
+
+	// Procesar subcapas recursivamente
+	if subcapas, ok := layerMap["layers"].([]interface{}); ok && len(subcapas) > 0 {
+		for i, subcapa := range subcapas {
+			switch sc := subcapa.(type) {
+			case map[string]interface{}:
+				s.integrateActionsInMap(sc, layerActions)
+			case *OverlayLayer:
+				s.integrateActionsInOverlay(sc, layerActions)
+			case OverlayLayer:
+				// modificar copia y reasignar
+				tmp := sc
+				s.integrateActionsInOverlay(&tmp, layerActions)
+				subcapas[i] = tmp
+			}
+		}
+		// asegurar que el slice modificado se vuelve a colocar
+		layerMap["layers"] = subcapas
+	}
+}
+
+func (s *projectService) integrateActionsInOverlay(overlay *OverlayLayer, layerActions map[string][]LayerAction) {
+	if overlay.QgisId != "" {
+		if actions, exists := layerActions[overlay.QgisId]; exists && len(actions) > 0 {
+			overlay.Actions = actions
+			s.log.Infow("✅ [integrateActionsInOverlay] Acciones integradas en capa Overlay",
+				"layerId", overlay.QgisId,
+				"actionsCount", len(actions))
+		}
+	}
+
+	// Procesar subcapas recursivamente
+	if overlay.Layers != nil {
+		if layersSlice, ok := overlay.Layers.([]interface{}); ok && len(layersSlice) > 0 {
+			for i, subcapa := range layersSlice {
+				switch sc := subcapa.(type) {
+				case map[string]interface{}:
+					s.integrateActionsInMap(sc, layerActions)
+				case *OverlayLayer:
+					s.integrateActionsInOverlay(sc, layerActions)
+				case OverlayLayer:
+					tmp := sc
+					s.integrateActionsInOverlay(&tmp, layerActions)
+					layersSlice[i] = tmp
+				}
+			}
+			// reasignar slice modificado
+			overlay.Layers = layersSlice
+		}
+	}
 }

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/gisquick/gisquick-server/internal/application"
 	"go.uber.org/zap"
 )
 
@@ -27,7 +28,7 @@ func NewQgisParser(log *zap.SugaredLogger, projectsRoot string) *QgisParser {
 }
 
 // ExtractLayerVariables obtiene las variables de capas de un archivo QGS/QGZ
-func (p *QgisParser) ExtractLayerVariables(projectName, projectFile string) (map[string]map[string]string, error) {
+func (p *QgisParser) ExtractLayerVariables(projectName, projectFile string) (map[string]map[string]string, []application.LayerAction, error) {
 	p.log.Infow("🔍 Extrayendo variables directamente del QGS/QGZ", "project", projectName, "file", projectFile)
 
 	// Ruta completa al archivo
@@ -46,11 +47,11 @@ func (p *QgisParser) ExtractLayerVariables(projectName, projectFile string) (map
 	}
 
 	if err != nil {
-		return nil, fmt.Errorf("error leyendo archivo de proyecto: %w", err)
+		return nil, nil, fmt.Errorf("error leyendo archivo de proyecto: %w", err)
 	}
 
 	// Parsear variables del XML
-	return p.parseQgsXml(qgsContent, projectName)
+	return p.ParseQgsXml(qgsContent, projectName)
 }
 
 // extractQgsFromQgz extrae el archivo QGS de un archivo QGZ
@@ -77,8 +78,32 @@ func (p *QgisParser) extractQgsFromQgz(qgzPath string) ([]byte, error) {
 	return nil, fmt.Errorf("no se encontró archivo QGS dentro del QGZ")
 }
 
-// parseQgsXml parsea el XML de QGS y extrae las variables de capa
-func (p *QgisParser) parseQgsXml(content []byte, projectName string) (map[string]map[string]string, error) {
+// Definición de estructuras para XML
+type ActionScope struct {
+	ID string `xml:"id,attr"`
+}
+
+type Action struct {
+	ID                        string        `xml:"id,attr"`
+	Name                      string        `xml:"name,attr"`
+	Action                    string        `xml:"action,attr"`
+	Type                      string        `xml:"type,attr"`
+	Capture                   string        `xml:"capture,attr"`
+	ShortTitle                string        `xml:"shortTitle,attr,omitempty"`
+	Description               string        `xml:"description,attr,omitempty"`
+	Icon                      string        `xml:"icon,attr,omitempty"`
+	IsEnabledOnlyWhenEditable string        `xml:"isEnabledOnlyWhenEditable,attr,omitempty"`
+	NotificationMessage       string        `xml:"notificationMessage,attr,omitempty"`
+	ActionScopes              []ActionScope `xml:"actionScope"`
+}
+
+type AttributeActions struct {
+	DefaultAction Action   `xml:"defaultAction"`
+	Actions       []Action `xml:"actionsetting"`
+}
+
+// parseQgsXml parsea el XML de QGS y extrae las variables de capa y acciones
+func (p *QgisParser) ParseQgsXml(content []byte, projectName string) (map[string]map[string]string, []application.LayerAction, error) {
 	p.log.Infow("📋 [parseQgsXml] Iniciando parseo de XML", "project", projectName, "xmlSize", len(content))
 
 	type Option struct {
@@ -94,12 +119,13 @@ func (p *QgisParser) parseQgsXml(content []byte, projectName string) (map[string
 		ID               string           `xml:"id,attr"`
 		LayerName        string           `xml:"layername"`
 		CustomProperties CustomProperties `xml:"customproperties"`
+		AttributeActions AttributeActions `xml:"attributeactions"`
 	}
 	type ProjectLayers struct {
 		Layers []MapLayer `xml:"maplayer"`
 	}
 
-	// ✅ NUEVA ESTRUCTURA PARA LAYER TREE
+	// ESTRUCTURA PARA LAYER TREE
 	type LayerTreeLayer struct {
 		ID   string `xml:"id,attr"`
 		Name string `xml:"name,attr"`
@@ -120,14 +146,14 @@ func (p *QgisParser) parseQgsXml(content []byte, projectName string) (map[string
 
 	var doc Qgis
 	if err := xml.Unmarshal(content, &doc); err != nil {
-		return nil, fmt.Errorf("error parseando XML: %w", err)
+		return nil, nil, fmt.Errorf("error parseando XML: %w", err)
 	}
 
 	p.log.Infow("🔍 [parseQgsXml] XML parseado correctamente",
 		"project", projectName,
 		"totalLayers", len(doc.ProjectLayers.Layers))
 
-	// ✅ CREAR MAPEO NOMBRE -> ID DESDE LAYER TREE
+	// CREAR MAPEO NOMBRE -> ID DESDE LAYER TREE
 	nameToIdMap := make(map[string]string)
 
 	// Procesar capas directas
@@ -157,9 +183,11 @@ func (p *QgisParser) parseQgsXml(content []byte, projectName string) (map[string
 	}
 
 	varsMap := make(map[string]map[string]string)
+	// Nuevo slice para almacenar todas las acciones
+	layerActions := make([]application.LayerAction, 0)
 
 	for _, layer := range doc.ProjectLayers.Layers {
-		// ✅ RESOLVER ID USANDO LAYER TREE
+		// RESOLVER ID USANDO LAYER TREE
 		layerId := layer.ID
 		if layerId == "" {
 			if treeId, exists := nameToIdMap[layer.LayerName]; exists {
@@ -230,11 +258,89 @@ func (p *QgisParser) parseQgsXml(content []byte, projectName string) (map[string
 					"varValue", varValues[i])
 			}
 		}
+
+		// Extraer acciones de la capa
+		if len(layer.AttributeActions.Actions) > 0 {
+			p.log.Infow("🔍 [parseQgsXml] Encontradas acciones en capa",
+				"project", projectName,
+				"layerId", layerId,
+				"actionsCount", len(layer.AttributeActions.Actions))
+		}
+
+		// Añadir estos logs para depuración
+		layerXML, _ := xml.MarshalIndent(layer, "", "  ")
+		p.log.Debugw("Contenido completo de la capa",
+			"layerName", layer.LayerName,
+			"xml", string(layerXML))
+
+		// Verificar específicamente la sección AttributeActions
+		if len(layer.AttributeActions.Actions) == 0 {
+			p.log.Debugw("⚠️ Capa sin acciones o sección attributeactions no encontrada",
+				"layerName", layer.LayerName)
+		}
+
+		for _, action := range layer.AttributeActions.Actions {
+			capture := action.Capture == "true"
+
+			// Crear la acción con los nombres de campo correctos
+			layerAction := application.LayerAction{
+				Id:          action.ID,
+				Name:        action.Name,
+				ActionType:  action.Type,
+				ActionText:  action.Action,
+				Description: action.Description,
+				Capture:     capture,
+				ShortTitle:  action.ShortTitle,
+				Icon:        action.Icon,
+			}
+
+			// Añadir LayerId
+			layerAction.LayerId = layerId
+
+			layerActions = append(layerActions, layerAction)
+
+			p.log.Infow("✅ [parseQgsXml] Acción encontrada!",
+				"project", projectName,
+				"layerId", layerId,
+				"actionId", action.ID,
+				"actionName", action.Name,
+				"actionUrl", action.Action)
+		}
 	}
 
 	p.log.Infow("🏁 [parseQgsXml] Parseo completado",
 		"project", projectName,
-		"layersWithQVSearch", len(varsMap))
+		"layersWithQVSearch", len(varsMap),
+		"totalActions", len(layerActions))
 
-	return varsMap, nil
+	return varsMap, layerActions, nil
+}
+
+// GetLayerVariables devuelve variables y acciones de las capas del proyecto
+func (p *QgisParser) GetLayerVariables(projectName string) (map[string]map[string]string, []application.LayerAction, error) {
+	// Buscar archivo QGS o QGZ
+	projectDir := filepath.Join(p.ProjectsRoot, projectName)
+
+	// Buscar archivos .qgs o .qgz
+	files, err := ioutil.ReadDir(projectDir)
+	if err != nil {
+		return nil, nil, fmt.Errorf("error al listar directorio del proyecto: %w", err)
+	}
+
+	var projectFile string
+	for _, file := range files {
+		if !file.IsDir() {
+			lName := strings.ToLower(file.Name())
+			if strings.HasSuffix(lName, ".qgs") || strings.HasSuffix(lName, ".qgz") {
+				projectFile = file.Name()
+				break
+			}
+		}
+	}
+
+	if projectFile == "" {
+		return nil, nil, fmt.Errorf("no se encontró archivo de proyecto QGS/QGZ")
+	}
+
+	return p.ExtractLayerVariables(projectName, projectFile)
 }

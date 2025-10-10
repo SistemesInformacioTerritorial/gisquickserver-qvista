@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/gisquick/gisquick-server/internal/application"
 	"github.com/gisquick/gisquick-server/internal/domain"
 	"github.com/gisquick/gisquick-server/internal/infrastructure/cache"
 	"github.com/jellydator/ttlcache/v3"
@@ -1108,7 +1109,7 @@ func (s *DiskStorage) UpdateProject(projectName string) error {
 	return nil
 }
 
-// GetLayerVariables obtiene las variables de capas de un proyecto QGIS
+// GetLayerVariables obtiene las variables de capas de un proyecto QGIS (para interfaz original)
 func (s *DiskStorage) GetLayerVariables(projectName string) (map[string]map[string]string, error) {
 	s.log.Infow("🔍 [DiskStorage.GetLayerVariables] Iniciando extracción", "project", projectName)
 
@@ -1123,23 +1124,51 @@ func (s *DiskStorage) GetLayerVariables(projectName string) (map[string]map[stri
 		return make(map[string]map[string]string), nil
 	}
 
-	s.log.Infow("📄 [DiskStorage.GetLayerVariables] Usando archivo QGS",
-		"project", projectName,
-		"qgsFile", projectInfo.QgisFile)
-
 	// Extraer variables del archivo QGS/QGZ usando el parser
-	variables, err := s.qgisParser.ExtractLayerVariables(projectName, projectInfo.QgisFile)
+	variables, _, err := s.qgisParser.ExtractLayerVariables(projectName, projectInfo.QgisFile)
 	if err != nil {
 		s.log.Errorw("❌ [DiskStorage.GetLayerVariables] Error extrayendo variables",
 			"project", projectName,
-			"qgsFile", projectInfo.QgisFile,
 			"error", err)
-		return make(map[string]map[string]string), nil // Retornar mapa vacío en lugar de error
+		return make(map[string]map[string]string), nil
 	}
 
-	s.log.Infow("✅ [DiskStorage.GetLayerVariables] Variables extraídas correctamente",
-		"project", projectName,
-		"layersWithVariables", len(variables))
-
 	return variables, nil
+}
+
+// GetLayerActionsAndVariables obtiene variables y acciones de capas (NUEVO MÉTODO)
+func (s *DiskStorage) GetLayerActionsAndVariables(projectName string) (map[string]map[string]string, []application.LayerAction, error) {
+	s.log.Infow("🔍 [GetLayerActionsAndVariables] Iniciando extracción", "project", projectName)
+
+	// Obtener información del proyecto para saber el nombre del archivo QGS/QGZ
+	projectInfo, err := s.GetProjectInfo(projectName)
+	if err != nil {
+		return nil, nil, fmt.Errorf("error obteniendo info del proyecto: %w", err)
+	}
+
+	if projectInfo.QgisFile == "" {
+		s.log.Warnw("⚠️ [GetLayerActionsAndVariables] Proyecto sin archivo QGS", "project", projectName)
+		return make(map[string]map[string]string), []application.LayerAction{}, nil
+	}
+
+	s.log.Infow("📄 [GetLayerActionsAndVariables] Usando archivo QGS",
+		"project", projectName,
+		"qgsFile", projectInfo.QgisFile)
+
+	// Extraer variables y acciones del archivo QGS/QGZ usando el parser
+	variables, actions, err := s.qgisParser.ExtractLayerVariables(projectName, projectInfo.QgisFile)
+	if err != nil {
+		s.log.Errorw("❌ [GetLayerActionsAndVariables] Error extrayendo variables",
+			"project", projectName,
+			"qgsFile", projectInfo.QgisFile,
+			"error", err)
+		return make(map[string]map[string]string), []application.LayerAction{}, nil
+	}
+
+	s.log.Infow("✅ [GetLayerActionsAndVariables] Variables y acciones extraídas correctamente",
+		"project", projectName,
+		"layersWithVariables", len(variables),
+		"actionsCount", len(actions))
+
+	return variables, actions, nil
 }
