@@ -56,17 +56,18 @@ type AccountsLimiter interface {
 }
 
 type projectService struct {
-	log     *zap.SugaredLogger
-	repo    domain.ProjectsRepository
-	limiter AccountsLimiter
-	// cache *ttlcache.Cache
+	log              *zap.SugaredLogger
+	repo             domain.ProjectsRepository
+	limiter          AccountsLimiter
+	variablesManager *LayerVariablesManager
 }
 
 func NewProjectsService(log *zap.SugaredLogger, repo domain.ProjectsRepository, limiter AccountsLimiter) *projectService {
 	return &projectService{
-		log:     log,
-		repo:    repo,
-		limiter: limiter,
+		log:              log,
+		repo:             repo,
+		limiter:          limiter,
+		variablesManager: NewLayerVariablesManager(log),
 	}
 }
 
@@ -141,6 +142,27 @@ func (s *projectService) GetUserProjects(username string) ([]domain.ProjectInfo,
 	fmt.Printf("Saliendo de GetUserProjects con datos: %v\n", data)
 	return data, nil
 
+}
+
+func (s *projectService) AccessibleProjects(username string, skipErrors bool) ([]domain.ProjectInfo, error) {
+	projects, err := s.repo.UserProjects(username)
+	if err != nil {
+		return nil, fmt.Errorf("getting user's projects: %w", err)
+	}
+
+	data := make([]domain.ProjectInfo, 0, len(projects))
+	for _, name := range projects {
+		info, err := s.repo.GetProjectInfo(name)
+		if err != nil {
+			if skipErrors {
+				s.log.Warnw("Skipping project with error", "project", name, "error", err)
+				continue
+			}
+			return nil, fmt.Errorf("getting project info for %s: %w", name, err)
+		}
+		data = append(data, info)
+	}
+	return data, nil
 }
 
 func (s *projectService) SaveFile(projectName, directory, pattern string, r io.Reader, size int64) (domain.ProjectFile, error) {
@@ -394,10 +416,10 @@ type Layer struct {
 
 type BaseLayer struct {
 	Layer
-	// WMS params, old API
-	URL       string   `json:"url"`
-	Format    string   `json:"format"`
-	WmsLayers []string `json:"wms_layers"`
+	URL       string            `json:"url"`
+	Format    string            `json:"format"`
+	WmsLayers []string          `json:"wms_layers"`
+	Variables map[string]string `json:"variables,omitempty"` // NUEVO: Variables qV_*
 }
 
 type OverlayLayer struct {
@@ -413,8 +435,25 @@ type OverlayLayer struct {
 	AttributeTableFields []string                `json:"attr_table_fields,omitempty"`
 	InfoPanelFields      []string                `json:"info_panel_fields,omitempty"`
 	ExportFields         []string                `json:"export_fields,omitempty"`
-	// Relations            json.RawMessage         `json:"relations,omitempty"`
-	Relations []map[string]any `json:"relations,omitempty"`
+	Relations            []map[string]any        `json:"relations,omitempty"`
+	QgisId               string                  `json:"qgis_id"`
+	QVSearch             string                  `json:"qV_search,omitempty"`
+	Variables            map[string]string       `json:"variables,omitempty"`
+	Layers               interface{}             `json:"layers,omitempty"`
+	Actions              []LayerAction           `json:"actions,omitempty"` // Nuevo campo
+}
+
+// LayerAction representa una acción definida en QGIS para una capa
+type LayerAction struct {
+	Id          string `json:"id"`
+	Name        string `json:"name"`
+	ActionType  string `json:"action_type"`
+	ActionText  string `json:"action_text"`
+	Description string `json:"description,omitempty"`
+	Capture     bool   `json:"capture_output,omitempty"`
+	ShortTitle  string `json:"short_title,omitempty"`
+	Icon        string `json:"icon,omitempty"`
+	LayerId     string `json:"layer_id"` // Asegurar que este campo existe
 }
 
 type SearchConfig struct {
@@ -614,9 +653,29 @@ func (s *projectService) GetMapConfig(projectName string, user domain.User) (map
 		func(id string) interface{} {
 			lmeta := meta.Layers[id]
 			lset := settings.Layers[id]
+			layerName := lmeta.Name
+			if strings.TrimSpace(layerName) == "" && id != "" {
+				// Extraer parte sin el hash
+				parts := strings.Split(id, "_")
+				if len(parts) > 5 {
+					layerName = strings.Join(parts[:len(parts)-5], "_")
+
+					// AÑADIR ESTA PARTE: normalizar guiones bajos múltiples
+					for strings.Contains(layerName, "__") {
+						layerName = strings.ReplaceAll(layerName, "__", "_")
+					}
+				} else {
+					layerName = id
+				}
+			}
+			// Normalizar espacios (pero mantener guiones)
+			layerName = strings.ReplaceAll(layerName, " ", "_")
+			// NO REEMPLAZAR GUIONES:
+			// layerName = strings.ReplaceAll(layerName, "-", "_")
+
 			ldata := BaseLayer{
 				Layer: Layer{
-					Name:             lmeta.Name,
+					Name:             layerName, // <-- Ahora siempre tendrá valor
 					Title:            lmeta.Title,
 					Type:             lmeta.Type,
 					Projection:       lmeta.Projection,
@@ -647,9 +706,6 @@ func (s *projectService) GetMapConfig(projectName string, user domain.User) (map
 	layers, err := TransformLayersTree(
 		overlays,
 		func(id string) bool {
-			// drawingOrder := indexOf(meta.LayersOrder, id)
-			// return !settings.Layers[id].Flags.Has("excluded") && rolesPerms.LayerFlags(id).Has("view")
-			// return drawingOrder != -1 && !settings.Layers[id].Flags.Has("excluded") && (rolesPerms == nil || rolesPerms.LayerFlags(id).Has("view"))
 			return !settings.Layers[id].Flags.Has("excluded") && (rolesPerms == nil || rolesPerms.LayerFlags(id).Has("view"))
 		},
 		func(id string) interface{} {
@@ -685,9 +741,29 @@ func (s *projectService) GetMapConfig(projectName string, user domain.User) (map
 					relations[offset+i] = r
 				}
 			}
+			layerName := lmeta.Name
+			if strings.TrimSpace(layerName) == "" && id != "" {
+				// Extraer parte sin el hash
+				parts := strings.Split(id, "_")
+				if len(parts) > 5 {
+					layerName = strings.Join(parts[:len(parts)-5], "_")
+
+					// AÑADIR ESTA PARTE: normalizar guiones bajos múltiples
+					for strings.Contains(layerName, "__") {
+						layerName = strings.ReplaceAll(layerName, "__", "_")
+					}
+				} else {
+					layerName = id
+				}
+			}
+			// Normalizar espacios (pero mantener guiones)
+			layerName = strings.ReplaceAll(layerName, " ", "_")
+			// NO REEMPLAZAR GUIONES:
+			// layerName = strings.ReplaceAll(layerName, "-", "_")
+
 			ldata := OverlayLayer{
 				Layer: Layer{
-					Name:             lmeta.Name,
+					Name:             layerName,
 					Title:            lmeta.Title,
 					Projection:       lmeta.Projection,
 					Type:             lmeta.Type,
@@ -701,19 +777,14 @@ func (s *projectService) GetMapConfig(projectName string, user domain.User) (map
 					Provider:         lmeta.Provider,
 					SourceParams:     lmeta.SourceParams,
 				},
-				Bands: lmeta.Bands,
-
+				Bands:     lmeta.Bands,
 				Relations: relations,
 				Hidden:    lset.Flags.Has("hidden"),
 				Queryable: queryable,
 				InfoPanel: lset.InfoPanelComponent,
+				QgisId:    id, // <-- CRÍTICO: Añade esta línea
 			}
-			// if !lset.Flags.Has("render_off") {
-			// 	drawingOrder := indexOf(meta.LayersOrder, id)
-			// 	ldata.DrawingOrder = &drawingOrder
-			// } else {
-			// 	ldata.Visible = false
-			// }
+
 			drawingOrder := -1
 			if !lset.Flags.Has("render_off") {
 				drawingOrder = indexOf(meta.LayersOrder, id)
@@ -744,18 +815,7 @@ func (s *projectService) GetMapConfig(projectName string, user domain.User) (map
 					ldata.Permissions.Update = ldata.Permissions.Update && lperms.Has("update")
 				}
 
-				// ldata.Attributes[0].Constrains
 				if queryable && len(lmeta.Attributes) > 0 {
-
-					// if len(lset.Attributes) > 0 {
-					// 	for _, a := range lmeta.Attributes {
-					// 		as, ok := lset.Attributes[a.Name]
-					// 		if ok {
-					// 			s.log.Infow("attribute", "layer", lmeta.Title, "name", a.Name, "settings", as, "config nill", as.Config == nil)
-					// 		}
-					// 	}
-					// }
-
 					if lset.Flags.Has("export") {
 						ldata.ExportFields = lset.ExportFields
 					}
@@ -803,8 +863,8 @@ func (s *projectService) GetMapConfig(projectName string, user domain.User) (map
 	if err != nil {
 		return nil, err
 	}
+
 	data := make(map[string]interface{})
-	// data["authentication"] = settings.Authentication
 	data["use_mapcache"] = settings.MapCache
 	data["zoom_extent"] = settings.InitialExtent
 	data["project_extent"] = settings.Extent
@@ -816,7 +876,8 @@ func (s *projectService) GetMapConfig(projectName string, user domain.User) (map
 	data["projection"] = meta.Projection
 	data["projections"] = meta.Projections
 	data["units"] = meta.Units
-	data["print_composers"] = meta.ComposerTemplates // TODO: filter by permissions
+	data["print_composers"] = meta.ComposerTemplates
+
 	if len(settings.Formatters) > 0 {
 		data["formatters"] = settings.Formatters
 	}
@@ -827,12 +888,12 @@ func (s *projectService) GetMapConfig(projectName string, user domain.User) (map
 	} else {
 		data["scripts"] = scripts
 	}
+
 	if settings.Title != "" {
 		data["title"] = settings.Title
 	} else {
 		data["title"] = meta.Title
 	}
-	// temporary backward compatibility
 	data["root_title"] = data["title"]
 	data["name"] = projectName
 	//jfs - 2025-02-25 - added to support OWS
@@ -851,8 +912,24 @@ func (s *projectService) GetMapConfig(projectName string, user domain.User) (map
 
 	s.log.Infow("GetMapConfig", "projectName", projectName, "ows_url", data["ows_url"], "ows_project", data["ows_project"])
 
-	topics := make([]domain.Topic, 0)
+	// EXTRAER VARIABLES Y ACCIONES DEL ARCHIVO QGS/QGZ
+	layerVariables, layerActions := s.variablesManager.ExtractLayerVariables(projectName, meta.Layers, s.repo)
 
+	// Integrar variables en las capas
+	if len(layerVariables) > 0 {
+		s.variablesManager.IntegrateVariablesIntoLayers(layers, layerVariables, meta.Layers)
+		s.variablesManager.IntegrateVariablesIntoLayers(baseLayersData, layerVariables, meta.Layers)
+	}
+
+	// Integrar acciones en las capas
+	if len(layerActions) > 0 {
+		s.integrateActionsIntoLayers(layers, layerActions)
+		s.log.Infow("🎯 [GetMapConfig] Acciones integradas",
+			"projectName", projectName,
+			"layersWithActions", len(layerActions))
+	}
+
+	topics := make([]domain.Topic, 0)
 	var visibleTopics []string
 	if rolesPerms != nil {
 		visibleTopics = rolesPerms.UserTopics()
@@ -861,23 +938,23 @@ func (s *projectService) GetMapConfig(projectName string, user domain.User) (map
 		if visibleTopics != nil && !contains(visibleTopics, topic.ID) {
 			continue
 		}
-		layers := make([]string, 0)
+		topicLayers := make([]string, 0)
 		for _, lid := range topic.Layers {
 			lset := settings.Layers[lid]
-
 			visible := !lset.Flags.Has("excluded") && !lset.Flags.Has("hidden")
 			if visible && rolesPerms != nil {
 				visible = rolesPerms.LayerFlags(lid).Has("view")
 			}
 			if visible {
-				layers = append(layers, meta.Layers[lid].Name)
+				topicLayers = append(topicLayers, meta.Layers[lid].Name)
 			}
 		}
-		if len(layers) > 0 {
-			topics = append(topics, domain.Topic{Title: topic.Title, Abstract: topic.Abstract, Layers: layers})
+		if len(topicLayers) > 0 {
+			topics = append(topics, domain.Topic{Title: topic.Title, Abstract: topic.Abstract, Layers: topicLayers})
 		}
 	}
 	data["topics"] = topics
+
 	if settings.Geocoding != nil || settings.SearchByLocation {
 		search := SearchConfig{SearchByLocation: settings.SearchByLocation}
 		if settings.Geocoding != nil {
@@ -885,42 +962,382 @@ func (s *projectService) GetMapConfig(projectName string, user domain.User) (map
 		}
 		data["search"] = search
 	}
-	return data, nil
-}
 
-func (s *projectService) AccessibleProjects(username string, skipErrors bool) ([]domain.ProjectInfo, error) {
-	projects := make([]domain.ProjectInfo, 0)
-	list, err := s.repo.AllProjects(skipErrors)
-	if err != nil {
-		return projects, err
-	}
-	for _, projectName := range list {
-		pi, err := s.repo.GetProjectInfo(projectName)
-		if err != nil {
-			s.log.Errorw("getting project info", "project", projectName, zap.Error(err))
-			if !skipErrors {
-				return nil, err
-			}
-		} else {
-			if pi.Authentication == "public" || pi.Authentication == "authenticated" {
-				projects = append(projects, pi)
-			} else if pi.Authentication == "users" {
-				settings, err := s.repo.GetSettings(projectName)
-				if err != nil {
-					s.log.Errorw("getting project settings", "project", projectName, zap.Error(err))
-					if !skipErrors {
-						return nil, err
+	s.log.Infow("GetMapConfig", "projectName", projectName, "ows_url", data["ows_url"])
+
+	// ✅ AÑADIR ESTE LOG JUSTO ANTES DEL RETURN FINAL
+	s.log.Infow("🎯 [GetMapConfig] JSON FINAL GENERADO",
+		"projectName", projectName)
+
+	// Verificar que las capas tienen qV_search en el result final
+	if layers, hasLayers := data["layers"]; hasLayers {
+		if layersSlice, ok := layers.([]interface{}); ok {
+			for i, layer := range layersSlice {
+				switch l := layer.(type) {
+				case OverlayLayer:
+					if l.QVSearch != "" {
+						s.log.Infow("🏆 [GetMapConfig] CAPA CON qV_search EN JSON FINAL",
+							"index", i,
+							"layerName", l.Name,
+							"layerTitle", l.Title,
+							"qgisId", l.QgisId,
+							"qV_search", l.QVSearch)
 					}
-				}
-				if domain.StringArray(settings.Auth.Users).Has(username) {
-					projects = append(projects, pi)
+				case map[string]interface{}:
+					if qvSearch, hasQV := l["qV_search"]; hasQV && qvSearch != "" {
+						name, _ := l["name"].(string)
+						title, _ := l["title"].(string)
+						s.log.Infow("🏆 [GetMapConfig] CAPA CON qV_search EN JSON FINAL (map)",
+							"index", i,
+							"layerName", name,
+							"layerTitle", title,
+							"qV_search", qvSearch)
+					}
 				}
 			}
 		}
 	}
-	return projects, nil
+
+	return data, nil
+}
+
+// extractLayerVariables función SIMPLIFICADA
+func (s *projectService) extractLayerVariables(projectName string, metaLayers map[string]domain.LayerMeta) map[string]interface{} {
+	s.log.Infow("🔍 [extractLayerVariables] INICIANDO EXTRACCIÓN",
+		"project", projectName,
+		"metaLayersCount", len(metaLayers))
+
+	// Mostrar todas las capas del meta para diagnóstico
+	s.log.Infow("📋 [extractLayerVariables] CAPAS EN METADATA:")
+	for metaId, metaLayer := range metaLayers {
+		s.log.Infow("   📌 Meta Capa",
+			"metaId", metaId,
+			"metaName", metaLayer.Name,
+			"metaTitle", metaLayer.Title)
+	}
+
+	layerVariables := make(map[string]interface{})
+
+	// Usar el repositorio para obtener variables del QGS
+	if repo, ok := s.repo.(interface {
+		GetLayerVariables(string) (map[string]map[string]string, error)
+	}); ok {
+		varsFromQgs, err := repo.GetLayerVariables(projectName)
+		if err != nil {
+			s.log.Errorw("❌ [extractLayerVariables] Error obteniendo variables del QGS",
+				"project", projectName,
+				"error", err)
+		} else {
+			s.log.Infow("📊 [extractLayerVariables] Variables extraídas del QGS",
+				"project", projectName,
+				"qgsLayersWithVars", len(varsFromQgs))
+
+			// Mostrar todas las variables extraídas del QGS
+			s.log.Infow("🗂️ [extractLayerVariables] CAPAS DEL QGS CON VARIABLES:")
+			for qgsLayerId, variables := range varsFromQgs {
+				s.log.Infow("   🎯 QGS Capa",
+					"qgsLayerId", qgsLayerId,
+					"variables", variables)
+			}
+
+			// ✅ MAPEO DIRECTO - EL PARSER YA DEVUELVE LOS IDs CORRECTOS
+			s.log.Infow("🔄 [extractLayerVariables] INICIANDO MAPEO DIRECTO")
+			for qgsLayerId, variables := range varsFromQgs {
+				// Verificar si existe en metadata
+				if _, exists := metaLayers[qgsLayerId]; exists {
+					layerVariables[qgsLayerId] = variables
+					s.log.Infow("✅ [extractLayerVariables] MATCH DIRECTO",
+						"qgsLayerId", qgsLayerId,
+						"variables", variables)
+				} else {
+					s.log.Warnw("⚠️ [extractLayerVariables] Capa QGS no encontrada en metadata",
+						"qgsLayerId", qgsLayerId,
+						"availableMetaIds", func() []string {
+							ids := make([]string, 0, len(metaLayers))
+							for id := range metaLayers {
+								ids = append(ids, id)
+							}
+							return ids
+						}())
+				}
+			}
+		}
+	} else {
+		s.log.Warnw("⚠️ [extractLayerVariables] Repositorio no soporta GetLayerVariables",
+			"project", projectName)
+	}
+
+	s.log.Infow("🏁 [extractLayerVariables] EXTRACCIÓN COMPLETADA",
+		"project", projectName,
+		"totalVariablesIntegradas", len(layerVariables))
+
+	return layerVariables
+}
+
+// integrateVariablesIntoLayers integra las variables directamente en cada capa
+func (s *projectService) integrateVariablesIntoLayers(
+	layers []interface{},
+	layerVariables map[string]interface{},
+	metaLayers map[string]domain.LayerMeta) {
+
+	s.log.Infow("🔧 [integrateVariablesIntoLayers] INICIANDO INTEGRACIÓN",
+		"layersCount", len(layers),
+		"variablesCount", len(layerVariables))
+
+	// 🔍 DIAGNÓSTICO CRÍTICO: Ver detalles de las capas ANTES de procesar
+	s.log.Infow("📋 [integrateVariablesIntoLayers] ANÁLISIS COMPLETO DE CAPAS:")
+	for i, layer := range layers {
+		layerType := fmt.Sprintf("%T", layer)
+		s.log.Infow("   📄 [integrateVariablesIntoLayers] CAPA DETECTADA",
+			"index", i,
+			"type", layerType)
+
+		switch l := layer.(type) {
+		case OverlayLayer:
+			s.log.Infow("      🔸 OverlayLayer (valor)",
+				"index", i,
+				"name", l.Name,
+				"qgisId", l.QgisId,
+				"title", l.Title,
+				"hasQVSearch", l.QVSearch != "",
+				"queryable", l.Queryable,
+				"hidden", l.Hidden)
+		case *OverlayLayer:
+			s.log.Infow("      🔹 OverlayLayer (puntero)",
+				"index", i,
+				"name", l.Name,
+				"qgisId", l.QgisId,
+				"title", l.Title,
+				"hasQVSearch", l.QVSearch != "",
+				"queryable", l.Queryable,
+				"hidden", l.Hidden)
+		case map[string]interface{}:
+			name, _ := l["name"].(string)
+			qgisId, _ := l["qgis_id"].(string)
+			title, _ := l["title"].(string)
+			s.log.Infow("      🔹 Map interface",
+				"index", i,
+				"name", name,
+				"qgisId", qgisId,
+				"title", title)
+		default:
+			s.log.Infow("      ❓ Tipo desconocido",
+				"index", i,
+				"type", layerType)
+		}
+	}
+
+	// 🔍 DIAGNÓSTICO: Ver qué variables tenemos disponibles
+	s.log.Infow("📊 [integrateVariablesIntoLayers] VARIABLES DISPONIBLES:")
+	for varId, variables := range layerVariables {
+		s.log.Infow("   🎯 Variable para capa",
+			"varId", varId,
+			"variables", variables)
+	}
+
+	// 🔍 DIAGNÓSTICO: Ver qué hay en metaLayers para referencia
+	s.log.Infow("📚 [integrateVariablesIntoLayers] METADATA DISPONIBLE:")
+	for metaId, metaLayer := range metaLayers {
+		s.log.Infow("   📘 Meta capa",
+			"metaId", metaId,
+			"metaName", metaLayer.Name,
+			"metaTitle", metaLayer.Title)
+	}
+
+	for i, layer := range layers {
+		s.log.Debugw("🔍 [integrateVariablesIntoLayers] Procesando item",
+			"index", i,
+			"itemType", fmt.Sprintf("%T", layer))
+
+		switch l := layer.(type) {
+		case map[string]interface{}:
+			s.integrateVariablesInMap(l, layerVariables, i)
+		case *OverlayLayer:
+			s.integrateVariablesInOverlay(l, layerVariables, i)
+		case OverlayLayer:
+			s.integrateVariablesInOverlayValue(&l, layerVariables, i)
+			layers[i] = l // Reasignar el valor modificado
+		default:
+			s.log.Debugw("🤷 [integrateVariablesIntoLayers] Tipo no soportado",
+				"index", i,
+				"type", fmt.Sprintf("%T", layer))
+		}
+	}
+
+	s.log.Infow("🏁 [integrateVariablesIntoLayers] INTEGRACIÓN COMPLETADA")
+}
+
+// integrateVariablesInMap maneja capas como map[string]interface{}
+func (s *projectService) integrateVariablesInMap(layerMap map[string]interface{}, layerVariables map[string]interface{}, index int) {
+	qgisId, _ := layerMap["qgis_id"].(string)
+	layerName, _ := layerMap["name"].(string)
+
+	s.log.Infow("🗂️ [integrateVariablesInMap] Procesando capa map",
+		"index", index,
+		"layerName", layerName,
+		"qgisId", qgisId)
+
+	// Buscar variables para esta capa por qgis_id
+	if variables, exists := layerVariables[qgisId]; exists {
+		if varsMap, ok := variables.(map[string]string); ok {
+			if qvSearch, hasQVSearch := varsMap["qV_search"]; hasQVSearch {
+				layerMap["qV_search"] = qvSearch
+				s.log.Infow("✅ [integrateVariablesInMap] Variable qV_search INTEGRADA",
+					"index", index,
+					"layerName", layerName,
+					"qgisId", qgisId,
+					"qV_search", qvSearch)
+			}
+		}
+	}
+}
+
+// integrateVariablesInOverlay maneja capas OverlayLayer por puntero
+func (s *projectService) integrateVariablesInOverlay(overlay *OverlayLayer, layerVariables map[string]interface{}, index int) {
+	s.log.Infow("🗂️ [integrateVariablesInOverlay] Procesando OverlayLayer puntero",
+		"index", index,
+		"overlayName", overlay.Name,
+		"overlayQgisId", overlay.QgisId)
+
+	// Buscar variables para esta capa por QgisId
+	if variables, exists := layerVariables[overlay.QgisId]; exists {
+		if varsMap, ok := variables.(map[string]string); ok {
+			if qvSearch, hasQVSearch := varsMap["qV_search"]; hasQVSearch {
+				overlay.QVSearch = qvSearch
+				s.log.Infow("✅ [integrateVariablesInOverlay] Variable qV_search INTEGRADA",
+					"index", index,
+					"overlayName", overlay.Name,
+					"overlayQgisId", overlay.QgisId,
+					"qV_search", qvSearch)
+			}
+		}
+	}
+}
+
+// ✅ NUEVA FUNCIÓN PARA OverlayLayer POR VALOR
+func (s *projectService) integrateVariablesInOverlayValue(overlay *OverlayLayer, layerVariables map[string]interface{}, index int) {
+	s.log.Infow("🗂️ [integrateVariablesInOverlayValue] Procesando OverlayLayer valor",
+		"index", index,
+		"overlayName", overlay.Name,
+		"overlayQgisId", overlay.QgisId,
+		"overlayTitle", overlay.Title)
+
+	// 🔧 NO modificar overlay.Name aquí, solo añadir QVSearch si existe
+	actualQgisId := overlay.QgisId
+
+	// Buscar variables para esta capa
+	if variables, exists := layerVariables[actualQgisId]; exists {
+		s.log.Infow("🎯 [integrateVariablesInOverlayValue] Variables encontradas",
+			"index", index,
+			"qgisId", actualQgisId,
+			"variables", variables)
+
+		if varsMap, ok := variables.(map[string]string); ok {
+			if qvSearch, hasQVSearch := varsMap["qV_search"]; hasQVSearch {
+				overlay.QVSearch = qvSearch
+
+				s.log.Infow("✅ [integrateVariablesInOverlayValue] Variable qV_search INTEGRADA",
+					"index", index,
+					"overlayName", overlay.Name,
+					"qgisId", overlay.QgisId,
+					"qV_search", qvSearch)
+			}
+		}
+	}
 }
 
 func (s *projectService) Close() {
-	s.repo.Close()
+	if s.repo != nil {
+		s.repo.Close()
+	}
+}
+
+// A projects.go - afegir aquest mètode
+func (s *projectService) SetRepo(repo domain.ProjectsRepository) {
+	s.repo = repo
+}
+
+// Añadir esta nueva función
+func (s *projectService) integrateActionsIntoLayers(layers []interface{}, layerActions map[string][]LayerAction) {
+	s.log.Infow("🔧 [integrateActionsIntoLayers] INICIANDO INTEGRACIÓN",
+		"layersCount", len(layers),
+		"layersWithActions", len(layerActions))
+
+	// Procesar cada capa
+	for i, layer := range layers {
+		switch l := layer.(type) {
+		case map[string]interface{}:
+			s.integrateActionsInMap(l, layerActions)
+		case *OverlayLayer:
+			s.integrateActionsInOverlay(l, layerActions)
+		case OverlayLayer:
+			// trabajar sobre copia y reasignar el valor modificado
+			tmp := l
+			s.integrateActionsInOverlay(&tmp, layerActions)
+			layers[i] = tmp
+		}
+	}
+}
+
+// Funciones auxiliares para integrar acciones
+func (s *projectService) integrateActionsInMap(layerMap map[string]interface{}, layerActions map[string][]LayerAction) {
+	qgisId, _ := layerMap["qgis_id"].(string)
+	if qgisId != "" {
+		if actions, exists := layerActions[qgisId]; exists && len(actions) > 0 {
+			layerMap["actions"] = actions
+			s.log.Infow("✅ [integrateActionsInMap] Acciones integradas en capa Map",
+				"layerId", qgisId,
+				"actionsCount", len(actions))
+		}
+	}
+
+	// Procesar subcapas recursivamente
+	if subcapas, ok := layerMap["layers"].([]interface{}); ok && len(subcapas) > 0 {
+		for i, subcapa := range subcapas {
+			switch sc := subcapa.(type) {
+			case map[string]interface{}:
+				s.integrateActionsInMap(sc, layerActions)
+			case *OverlayLayer:
+				s.integrateActionsInOverlay(sc, layerActions)
+			case OverlayLayer:
+				// modificar copia y reasignar
+				tmp := sc
+				s.integrateActionsInOverlay(&tmp, layerActions)
+				subcapas[i] = tmp
+			}
+		}
+		// asegurar que el slice modificado se vuelve a colocar
+		layerMap["layers"] = subcapas
+	}
+}
+
+func (s *projectService) integrateActionsInOverlay(overlay *OverlayLayer, layerActions map[string][]LayerAction) {
+	if overlay.QgisId != "" {
+		if actions, exists := layerActions[overlay.QgisId]; exists && len(actions) > 0 {
+			overlay.Actions = actions
+			s.log.Infow("✅ [integrateActionsInOverlay] Acciones integradas en capa Overlay",
+				"layerId", overlay.QgisId,
+				"actionsCount", len(actions))
+		}
+	}
+
+	// Procesar subcapas recursivamente
+	if overlay.Layers != nil {
+		if layersSlice, ok := overlay.Layers.([]interface{}); ok && len(layersSlice) > 0 {
+			for i, subcapa := range layersSlice {
+				switch sc := subcapa.(type) {
+				case map[string]interface{}:
+					s.integrateActionsInMap(sc, layerActions)
+				case *OverlayLayer:
+					s.integrateActionsInOverlay(sc, layerActions)
+				case OverlayLayer:
+					tmp := sc
+					s.integrateActionsInOverlay(&tmp, layerActions)
+					layersSlice[i] = tmp
+				}
+			}
+			// reasignar slice modificado
+			overlay.Layers = layersSlice
+		}
+	}
 }

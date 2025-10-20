@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/gisquick/gisquick-server/internal/application"
 	"github.com/gisquick/gisquick-server/internal/domain"
 	"github.com/gisquick/gisquick-server/internal/infrastructure/cache"
 	"github.com/jellydator/ttlcache/v3"
@@ -91,6 +92,8 @@ type DiskStorage struct {
 	configCache       *cache.DataCache[string, json.RawMessage]
 	projectInfoReader JsonFilesReader[domain.ProjectInfo]
 	settingsReader    JsonFilesReader[domain.ProjectSettings]
+	configGenerator   domain.ProjectConfigGenerator
+	qgisParser        *QgisParser // ✅ AÑADIR
 }
 
 type Info struct {
@@ -152,26 +155,25 @@ type JsonFilesReader[T any] interface {
 
 var excludeExtRegex = regexp.MustCompile(`(?i).*\.(gpkg-wal|gpkg-shm)$`)
 
-func NewDiskStorage(log *zap.SugaredLogger, projectsRoot string) *DiskStorage {
+func NewDiskStorage(log *zap.SugaredLogger, projectsRoot string, configGenerator domain.ProjectConfigGenerator) *DiskStorage {
 	cfgCache := cache.NewDataCache(func(filename string) (json.RawMessage, error) {
 		var config json.RawMessage
 		content, err := ioutil.ReadFile(filename)
 		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				return nil, nil
-			}
-			return nil, fmt.Errorf("reading project file: %w", err)
+			return nil, err
 		}
 		err = json.Unmarshal(content, &config)
 		if err != nil {
-			return nil, fmt.Errorf("reading customization file: %w", err)
+			return nil, err
 		}
 		return config, nil
 	})
 	ds := &DiskStorage{
-		ProjectsRoot: projectsRoot,
-		log:          log,
-		configCache:  cfgCache,
+		ProjectsRoot:    projectsRoot,
+		log:             log,
+		configCache:     cfgCache,
+		configGenerator: configGenerator,
+		qgisParser:      NewQgisParser(log, projectsRoot), // ✅ AÑADIR
 	}
 	loader := ttlcache.LoaderFunc[string, *FilesIndex](
 		func(c *ttlcache.Cache[string, *FilesIndex], project string) *ttlcache.Item[string, *FilesIndex] {
@@ -863,6 +865,8 @@ func (s *DiskStorage) UpdateFiles(projectName string, info domain.FilesChanges, 
 
 	s.log.Info("updating project files", "project", projectName)
 	project, err := s.GetProjectInfo(projectName)
+	s.log.Debug("Updating project", projectName)
+
 	if err != nil {
 		s.log.Errorw("getting project info", "project", projectName, zap.Error(err))
 		return nil, err
@@ -964,7 +968,23 @@ func (s *DiskStorage) UpdateFiles(projectName string, info domain.FilesChanges, 
 		s.log.Errorw("updating project file", "project", projectName, zap.Error(err))
 		return nil, fmt.Errorf("updating project file: %w", err)
 	}
+<<<<<<< HEAD
 	s.log.Infow("files updated successfully", "project", projectName, "totalSize", size)
+=======
+	// Regenerar project.json amb variables qV_search
+	if s.configGenerator != nil {
+		s.log.Infow("🔄 Regenerant project.json amb variables", "project", projectName)
+		dummyUser := domain.User{Username: "system"}
+
+		if _, err := s.configGenerator.GetMapConfig(projectName, dummyUser); err != nil {
+			s.log.Errorw("Error regenerant project.json", "project", projectName, "error", err)
+			// No retornem error per no trencar l'update
+		} else {
+			s.log.Infow("✅ project.json regenerat amb variables", "project", projectName)
+		}
+	}
+
+>>>>>>> release/octubre25
 	return indexProjectFilesList(index), nil
 }
 
@@ -1082,4 +1102,85 @@ func (s *DiskStorage) GetProjectCustomizations(projectName string) (json.RawMess
 		return nil, err
 	}
 	return config, nil
+}
+
+// A disk_storage.go - corregir línea 1098
+func (s *DiskStorage) UpdateProject(projectName string) error {
+	s.log.Infow("🔄 Regenerando project.json con variables", "project", projectName)
+
+	if s.configGenerator != nil {
+		dummyUser := domain.User{Username: "system"}
+		_, err := s.configGenerator.GetMapConfig(projectName, dummyUser)
+		if err != nil {
+			s.log.Errorw("Error regenerando project.json", "project", projectName, "error", err)
+			return err
+		}
+		s.log.Infow("✅ project.json regenerado correctamente", "project", projectName)
+	}
+
+	return nil
+}
+
+// GetLayerVariables obtiene las variables de capas de un proyecto QGIS (para interfaz original)
+func (s *DiskStorage) GetLayerVariables(projectName string) (map[string]map[string]string, error) {
+	s.log.Infow("🔍 [DiskStorage.GetLayerVariables] Iniciando extracción", "project", projectName)
+
+	// Obtener información del proyecto para saber el nombre del archivo QGS/QGZ
+	projectInfo, err := s.GetProjectInfo(projectName)
+	if err != nil {
+		return nil, fmt.Errorf("error obteniendo info del proyecto: %w", err)
+	}
+
+	if projectInfo.QgisFile == "" {
+		s.log.Warnw("⚠️ [DiskStorage.GetLayerVariables] Proyecto sin archivo QGS", "project", projectName)
+		return make(map[string]map[string]string), nil
+	}
+
+	// Extraer variables del archivo QGS/QGZ usando el parser
+	variables, _, err := s.qgisParser.ExtractLayerVariables(projectName, projectInfo.QgisFile)
+	if err != nil {
+		s.log.Errorw("❌ [DiskStorage.GetLayerVariables] Error extrayendo variables",
+			"project", projectName,
+			"error", err)
+		return make(map[string]map[string]string), nil
+	}
+
+	return variables, nil
+}
+
+// GetLayerActionsAndVariables obtiene variables y acciones de capas (NUEVO MÉTODO)
+func (s *DiskStorage) GetLayerActionsAndVariables(projectName string) (map[string]map[string]string, []application.LayerAction, error) {
+	s.log.Infow("🔍 [GetLayerActionsAndVariables] Iniciando extracción", "project", projectName)
+
+	// Obtener información del proyecto para saber el nombre del archivo QGS/QGZ
+	projectInfo, err := s.GetProjectInfo(projectName)
+	if err != nil {
+		return nil, nil, fmt.Errorf("error obteniendo info del proyecto: %w", err)
+	}
+
+	if projectInfo.QgisFile == "" {
+		s.log.Warnw("⚠️ [GetLayerActionsAndVariables] Proyecto sin archivo QGS", "project", projectName)
+		return make(map[string]map[string]string), []application.LayerAction{}, nil
+	}
+
+	s.log.Infow("📄 [GetLayerActionsAndVariables] Usando archivo QGS",
+		"project", projectName,
+		"qgsFile", projectInfo.QgisFile)
+
+	// Extraer variables y acciones del archivo QGS/QGZ usando el parser
+	variables, actions, err := s.qgisParser.ExtractLayerVariables(projectName, projectInfo.QgisFile)
+	if err != nil {
+		s.log.Errorw("❌ [GetLayerActionsAndVariables] Error extrayendo variables",
+			"project", projectName,
+			"qgsFile", projectInfo.QgisFile,
+			"error", err)
+		return make(map[string]map[string]string), []application.LayerAction{}, nil
+	}
+
+	s.log.Infow("✅ [GetLayerActionsAndVariables] Variables y acciones extraídas correctamente",
+		"project", projectName,
+		"layersWithVariables", len(variables),
+		"actionsCount", len(actions))
+
+	return variables, actions, nil
 }

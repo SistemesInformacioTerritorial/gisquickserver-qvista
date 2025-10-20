@@ -232,4 +232,7 @@ type ProjectsRepository interface {
 	UpdateScripts(projectName string, scripts Scripts) error
 	GetProjectCustomizations(projectName string) (json.RawMessage, error)
 	Close()
+
+	// Añadido para qV_search
+	GetLayerVariables(projectName string) (map[string]map[string]string, error)
 }
