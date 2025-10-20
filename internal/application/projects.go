@@ -716,8 +716,15 @@ func (s *projectService) GetMapConfig(projectName string, user domain.User) (map
 				lflags = lflags.Intersection(rolesPerms.LayerFlags(id))
 			}
 
-			queryable := lmeta.Flags.Has("query") && !lset.Flags.Has("hidden") && lflags.Has("query")
+			// derivar queryable también si hay atributos (fallback) y respetar permisos
+			baseQueryable := lmeta.Flags.Has("query") || len(lmeta.Attributes) > 0
+			permAllowsQuery := true
+			if rolesPerms != nil {
+				permAllowsQuery = lflags.Has("query")
+			}
+			queryable := baseQueryable && !lset.Flags.Has("hidden") && permAllowsQuery
 
+			// construir relations (como en la versión anterior)
 			relations := lmeta.Relations
 			if lset.QgisRelations != nil || lset.Relations != nil {
 				relations = make([]map[string]any, len(lmeta.Relations)+len(lset.Relations))
@@ -741,25 +748,14 @@ func (s *projectService) GetMapConfig(projectName string, user domain.User) (map
 					relations[offset+i] = r
 				}
 			}
-			layerName := lmeta.Name
-			if strings.TrimSpace(layerName) == "" && id != "" {
-				// Extraer parte sin el hash
-				parts := strings.Split(id, "_")
-				if len(parts) > 5 {
-					layerName = strings.Join(parts[:len(parts)-5], "_")
 
-					// AÑADIR ESTA PARTE: normalizar guiones bajos múltiples
-					for strings.Contains(layerName, "__") {
-						layerName = strings.ReplaceAll(layerName, "__", "_")
-					}
-				} else {
-					layerName = id
+			// elegir nombre usado por OWS/WFS: priorizar source.layername para providers tipo ogr
+			layerName := lmeta.Name
+			if lmeta.Provider == "ogr" {
+				if ln := lmeta.SourceParams.String("layername"); ln != "" {
+					layerName = ln
 				}
 			}
-			// Normalizar espacios (pero mantener guiones)
-			layerName = strings.ReplaceAll(layerName, " ", "_")
-			// NO REEMPLAZAR GUIONES:
-			// layerName = strings.ReplaceAll(layerName, "-", "_")
 
 			ldata := OverlayLayer{
 				Layer: Layer{
@@ -782,7 +778,9 @@ func (s *projectService) GetMapConfig(projectName string, user domain.User) (map
 				Hidden:    lset.Flags.Has("hidden"),
 				Queryable: queryable,
 				InfoPanel: lset.InfoPanelComponent,
-				QgisId:    id, // <-- CRÍTICO: Añade esta línea
+				// guardar QgisId para integraciones posteriores
+				// (campo QgisId debe existir en OverlayLayer definition)
+				QgisId: id,
 			}
 
 			drawingOrder := -1
@@ -813,6 +811,18 @@ func (s *projectService) GetMapConfig(projectName string, user domain.User) (map
 					ldata.Permissions.Insert = ldata.Permissions.Insert && lperms.Has("insert")
 					ldata.Permissions.Delete = ldata.Permissions.Delete && lperms.Has("delete")
 					ldata.Permissions.Update = ldata.Permissions.Update && lperms.Has("update")
+				}
+
+				// fallback: permitir view si hay atributos y la capa no está oculta y permisos lo permiten
+				if !ldata.Permissions.View {
+					allowView := len(lmeta.Attributes) > 0 && !lset.Flags.Has("hidden")
+					if allowView && rolesPerms != nil {
+						allowView = rolesPerms.LayerFlags(id).Has("view")
+					}
+					if allowView {
+						ldata.Permissions.View = true
+						s.log.Debugw("🔧 [GetMapConfig] habilitando view por fallback (atributos presentes)", "layerId", id, "name", lmeta.Name)
+					}
 				}
 
 				if queryable && len(lmeta.Attributes) > 0 {
@@ -864,6 +874,45 @@ func (s *projectService) GetMapConfig(projectName string, user domain.User) (map
 		return nil, err
 	}
 
+	// --- AÑADIDO: logs de diagnóstico tras crear 'layers' ---
+	serializeForDebug := func(v interface{}) string {
+		b, _ := json.MarshalIndent(v, "", "  ")
+		if b == nil {
+			return fmt.Sprintf("%#v", v)
+		}
+		return string(b)
+	}
+
+	s.log.Infow("🔍 [GetMapConfig] TransformLayersTree generado",
+		"layers_count", len(layers),
+		"base_layers_count", len(baseLayersData))
+	if len(layers) > 0 {
+		s.log.Infow("🔍 [GetMapConfig] Primer layer (tipo)", "type", fmt.Sprintf("%T", layers[0]))
+		s.log.Debugw("🔍 [GetMapConfig] Primer layer JSON", "json", serializeForDebug(layers[0]))
+	}
+
+	// Volcar meta.Layers para la capa que vimos problemática (si existe)
+	const suspectQgisId = "cens_locals_web_15753b44_dfdf_4ad0_8ee2_77f8e7098333"
+	if meta.Layers != nil {
+		if ml, ok := meta.Layers[suspectQgisId]; ok {
+			s.log.Infow("🔎 [GetMapConfig] Meta info para capa sospechosa encontrada",
+				"qgis_id", suspectQgisId,
+				"name", ml.Name,
+				"title", ml.Title)
+			s.log.Debugw("🔎 [GetMapConfig] Meta layer JSON", "json", serializeForDebug(ml))
+		} else {
+			// volcar una muestra de meta.Layers para inspección
+			cnt := 0
+			for k, v := range meta.Layers {
+				if cnt >= 5 {
+					break
+				}
+				s.log.Debugw("🔎 [GetMapConfig] MetaLayers sample", "meta_id", k, "layer", serializeForDebug(v))
+				cnt++
+			}
+		}
+	}
+	// --- FIN AÑADIDO ---
 	data := make(map[string]interface{})
 	data["use_mapcache"] = settings.MapCache
 	data["zoom_extent"] = settings.InitialExtent
@@ -900,14 +949,58 @@ func (s *projectService) GetMapConfig(projectName string, user domain.User) (map
 	data["ows_project"] = projectName
 
 	// EXTRAER VARIABLES Y ACCIONES DEL ARCHIVO QGS/QGZ
+	s.log.Infow("🔎 [GetMapConfig] Llamando a ExtractLayerVariables", "projectName", projectName)
 	layerVariables, layerActions := s.variablesManager.ExtractLayerVariables(projectName, meta.Layers, s.repo)
+
+	// --- AÑADIDO: snapshots / comprobaciones antes de la integración ---
+	serialize := func(v interface{}) string {
+		b, err := json.MarshalIndent(v, "", "  ")
+		if err != nil {
+			return fmt.Sprintf("%#v", v)
+		}
+		return string(b)
+	}
+
+	checkAndLogLayer := func(prefix string, idx int, item interface{}) {
+		switch t := item.(type) {
+		case map[string]interface{}:
+			_, hasAttrs := t["attributes"]
+			_, hasQV := t["qV_search"]
+			_, hasActions := t["actions"]
+			qry, _ := t["queryable"].(bool)
+			s.log.Infow(prefix+" map layer snapshot",
+				"index", idx,
+				"name", t["name"],
+				"qgis_id", t["qgis_id"],
+				"has_attributes", hasAttrs,
+				"queryable", qry,
+				"has_qV_search", hasQV,
+				"has_actions", hasActions)
+			s.log.Debugw(prefix+" map layer JSON", "index", idx, "json", serialize(t))
+		default:
+			// intentar serializar genérico (OverlayLayer u otro)
+			s.log.Infow(prefix+" layer generic snapshot",
+				"index", idx,
+				"type", fmt.Sprintf("%T", item))
+			s.log.Debugw(prefix+" layer JSON", "index", idx, "json", serialize(item))
+		}
+	}
+
+	if len(layers) > 0 {
+		checkAndLogLayer("🔍 [GetMapConfig BEFORE INTEGRATION]", 0, layers[0])
+	}
+	if len(baseLayersData) > 0 {
+		checkAndLogLayer("🔍 [GetMapConfig BEFORE INTEGRATION base]", 0, baseLayersData[0])
+	}
+	// --- FIN AÑADIDO ---
 
 	// Integrar variables en las capas
 	if len(layerVariables) > 0 {
+		s.log.Infow("🔧 [GetMapConfig] Integrando variables en capas", "projectName", projectName, "varsCount", len(layerVariables))
 		s.variablesManager.IntegrateVariablesIntoLayers(layers, layerVariables, meta.Layers)
 		s.variablesManager.IntegrateVariablesIntoLayers(baseLayersData, layerVariables, meta.Layers)
+		s.log.Infow("🔧 [GetMapConfig] Integración de variables FINALIZADA", "projectName", projectName)
 	}
-
 	// Integrar acciones en las capas
 	if len(layerActions) > 0 {
 		s.integrateActionsIntoLayers(layers, layerActions)
