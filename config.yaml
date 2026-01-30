@@ -49,3 +49,14 @@ email:
   sender: auth.smtp@nexusgeographics.com
   activationSubject: Gisquick Registration
   passwordResetSubject: Gisquick Password Reset
+
+logging:
+  # If empty, level is derived from gisquick.debug
+  level: ""
+  file:
+    enabled: true
+    path: c:/gisquick/logs/gisquick-server.log
+    maxSizeMB: 100
+    maxBackups: 10
+    maxAgeDays: 30
+    compress: false

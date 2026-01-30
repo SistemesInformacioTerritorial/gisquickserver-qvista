@@ -22,7 +22,6 @@ import (
 	"github.com/gisquick/gisquick-server/internal/domain"
 	"github.com/gisquick/gisquick-server/internal/infrastructure/cache"
 	"github.com/jellydator/ttlcache/v3"
-	"github.com/labstack/gommon/log"
 	"go.uber.org/zap"
 )
 
@@ -265,8 +264,8 @@ func (s *DiskStorage) Create(fullName string, meta json.RawMessage) (*domain.Pro
 		s.log.Errorw("parsing qgis meta", zap.Error(err))
 		return nil, domain.ErrInvalidQgisMeta
 	}
-	log.Debug("Qgis meta: ", i)
-	log.Debug("About to save qgis.json")
+	s.log.Debugw("qgis meta", "meta", i)
+	s.log.Debug("saving qgis.json")
 	if err := s.saveConfigFile(fullName, "qgis.json", meta); err != nil {
 		return nil, fmt.Errorf("creating qgis meta file: %w", err)
 	}
@@ -278,8 +277,8 @@ func (s *DiskStorage) Create(fullName string, meta json.RawMessage) (*domain.Pro
 		State:      "empty",
 		Created:    time.Now().UTC(),
 	}
-	log.Debug("Project info: ", info)
-	log.Debug("About to save project.json")
+	s.log.Debugw("project info", "info", info)
+	s.log.Debug("saving project.json")
 	return &info, s.saveConfigFile(fullName, "project.json", info)
 }
 
@@ -295,7 +294,7 @@ func (s *DiskStorage) UserProjects(username string) ([]string, error) {
 	entries, err := os.ReadDir(userDir)
 	// log.Info("entries", entries)
 	if err != nil {
-		log.Info("entries with errors")
+		s.log.Debugw("reading user projects dir failed", "user", username, zap.Error(err))
 		if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) {
 			return projectsNames, nil
 		}
@@ -304,15 +303,13 @@ func (s *DiskStorage) UserProjects(username string) ([]string, error) {
 	//log.Info("entries with no errors, entering loop")
 	for _, entry := range entries {
 		if entry.IsDir() {
-			fmt.Println("entri is dir , entry name", entry.Name())
 			projectName := filepath.Join(username, entry.Name())
-			fmt.Println("project name ", projectName)
 			projPath := filepath.Join(userDir, entry.Name(), ".gisquick", "project.json")
 
 			//projPath := filepath.Join(userDir, entry.Name(), ".gisquick", "project.json")
 			//		log.Info("--------------------- project path    ----------", projPath)
 			if fileExists(projPath) {
-				log.Info("project path exists !")
+				s.log.Debugw("project path exists", "project", projectName)
 				projectsNames = append(projectsNames, projectName)
 			}
 		}
@@ -704,7 +701,7 @@ func (s *DiskStorage) CreateFile(projectName, directory, pattern string, r io.Re
 	finfo.Mtime = fStat.ModTime().Unix()
 	finfo.Path = f.Name()
 	finfo.Hash = fmt.Sprintf("%x", sha.Sum(nil))
-	log.Debug("finfo.Hash = ", finfo.Hash)
+	s.log.Debugw("file hash", "hash", finfo.Hash)
 	s.log.Debugw("File created", "projectName", projectName, "directory", directory, "pattern", pattern, "hash", finfo.Hash)
 	if strings.Contains(pattern, "<hash>") {
 		pattern = strings.Replace(pattern, "<hash>", finfo.Hash[:10], 1)
@@ -862,10 +859,9 @@ func indexProjectFilesList(index *FilesIndex) []domain.ProjectFile {
 }
 
 func (s *DiskStorage) UpdateFiles(projectName string, info domain.FilesChanges, next domain.FilesReader) ([]domain.ProjectFile, error) {
-
-	s.log.Info("updating project files", "project", projectName)
+	s.log.Infow("updating project files", "project", projectName)
 	project, err := s.GetProjectInfo(projectName)
-	s.log.Debug("Updating project", projectName)
+	s.log.Debugw("updating project", "project", projectName)
 
 	if err != nil {
 		s.log.Errorw("getting project info", "project", projectName, zap.Error(err))
@@ -968,23 +964,19 @@ func (s *DiskStorage) UpdateFiles(projectName string, info domain.FilesChanges, 
 		s.log.Errorw("updating project file", "project", projectName, zap.Error(err))
 		return nil, fmt.Errorf("updating project file: %w", err)
 	}
-<<<<<<< HEAD
 	s.log.Infow("files updated successfully", "project", projectName, "totalSize", size)
-=======
-	// Regenerar project.json amb variables qV_search
-	if s.configGenerator != nil {
-		s.log.Infow("🔄 Regenerant project.json amb variables", "project", projectName)
-		dummyUser := domain.User{Username: "system"}
 
+	// Regenerate project.json with computed variables (if supported)
+	if s.configGenerator != nil {
+		s.log.Infow("regenerating project.json with variables", "project", projectName)
+		dummyUser := domain.User{Username: "system"}
 		if _, err := s.configGenerator.GetMapConfig(projectName, dummyUser); err != nil {
-			s.log.Errorw("Error regenerant project.json", "project", projectName, "error", err)
-			// No retornem error per no trencar l'update
+			s.log.Errorw("error regenerating project.json", "project", projectName, zap.Error(err))
+			// Do not fail the upload on regeneration errors
 		} else {
-			s.log.Infow("✅ project.json regenerat amb variables", "project", projectName)
+			s.log.Infow("project.json regenerated", "project", projectName)
 		}
 	}
-
->>>>>>> release/octubre25
 	return indexProjectFilesList(index), nil
 }
 

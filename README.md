@@ -22,6 +22,10 @@ Per iniciar el servidor:
 qvistaweb.exe serve
 ```
 
+## Manual de configuració / configuració del servidor
+
+Vegeu [MANUAL_CONFIGURACION_SERVER.md](MANUAL_CONFIGURACION_SERVER.md).
+
 Comandes disponibles:
 
 - `serve`: Inicia el servidor web

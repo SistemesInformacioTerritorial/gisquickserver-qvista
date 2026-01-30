@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -25,7 +26,36 @@ import (
 	mail "github.com/xhit/go-simple-mail/v2"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
+	"gopkg.in/natefinch/lumberjack.v2"
 )
+
+type FileLoggingConfig struct {
+	Enabled    bool
+	Path       string
+	MaxSizeMB  int
+	MaxBackups int
+	MaxAgeDays int
+	Compress   bool
+}
+
+func parseLogLevel(value string, fallback zapcore.Level) zapcore.Level {
+	value = strings.TrimSpace(strings.ToLower(value))
+	if value == "" {
+		return fallback
+	}
+	switch value {
+	case "debug":
+		return zap.DebugLevel
+	case "info":
+		return zap.InfoLevel
+	case "warn", "warning":
+		return zap.WarnLevel
+	case "error":
+		return zap.ErrorLevel
+	default:
+		return fallback
+	}
+}
 
 func parseByteSize(value string) (int64, error) {
 	value = strings.TrimSpace(value)
@@ -149,6 +179,15 @@ func Serve() error {
 	v.SetDefault("email.activationSubject", "Gisquick Registration")
 	v.SetDefault("email.passwordResetSubject", "Gisquick Password Reset")
 
+	// Logging defaults
+	v.SetDefault("logging.level", "")
+	v.SetDefault("logging.file.enabled", true)
+	v.SetDefault("logging.file.path", "c:/gisquick/logs/gisquick-server.log")
+	v.SetDefault("logging.file.maxSizeMB", 100)
+	v.SetDefault("logging.file.maxBackups", 10)
+	v.SetDefault("logging.file.maxAgeDays", 30)
+	v.SetDefault("logging.file.compress", false)
+
 	// Configure file search
 	configFile := os.Getenv("GISQUICK_CONFIG")
 	if configFile != "" {
@@ -176,24 +215,11 @@ func Serve() error {
 	// Create configuration structure
 	cfg := struct {
 		Gisquick struct {
-<<<<<<< HEAD
-			//Debug                bool   `conf:"default:false"`
-			Debug        bool   `conf:"default:true"`
-			Language     string `conf:"default:en-us"`
-			ProjectsRoot string `conf:"default:c:/gisquickpre/publish"`
-			MapCacheRoot string
-			//MapserverURL string `conf:"default:http://localhost:8080/qgis-server"`
-
-			//jfs gisquick windowns
-			MapserverURL string `conf:"default:http://localhost:8080/cgi-bin/qgis_mapserv.fcgi.exe"`
-
-=======
 			Debug                bool
 			Language             string
 			ProjectsRoot         string
 			MapCacheRoot         string
 			MapserverURL         string
->>>>>>> release/octubre25
 			PluginsURL           string
 			SignupAPI            bool
 			ProjectSizeLimit     ByteSize
@@ -210,29 +236,6 @@ func Serve() error {
 			SecretKey            string
 		}
 		Web struct {
-<<<<<<< HEAD
-			ReadTimeout     time.Duration `conf:"default:5s"`
-			WriteTimeout    time.Duration `conf:"default:10s"`
-			IdleTimeout     time.Duration `conf:"default:120s"`
-			ShutdownTimeout time.Duration `conf:"default:20s"`
-			SiteURL         string        `conf:"default:http://127.0.0.1"`
-			APIHost         string        `conf:"default:0.0.0.0:4000"`
-		}
-		Postgres struct {
-			User string `conf:"default:postgres"`
-			//Password           string `conf:"default:nexus,mask"`
-			Password string `conf:"default:nexus"` // trec la mask perque es pogui veure el password al arrencar
-			Host     string `conf:"default:localhost"`
-			//Name     string `conf:"default:postgres,env:GISQUICK_POSTGRES_DB"`
-			//	Name               string `conf:"default:postgres,env:POSTGRES_DB"`
-			Name string `conf:"default:pre,env:POSTGRES_DB"`
-			//Name               string `conf:"default:postgres"`
-			Port               int    `conf:"default:5433"`
-			MaxIdleConns       int    `conf:"default:3"`
-			MaxOpenConns       int    `conf:"default:3"`
-			SSLMode            string `conf:"default:disable"`
-			StatementCacheMode string `conf:"default:prepare"`
-=======
 			ReadTimeout     time.Duration
 			WriteTimeout    time.Duration
 			IdleTimeout     time.Duration
@@ -250,7 +253,6 @@ func Serve() error {
 			MaxOpenConns       int
 			SSLMode            string
 			StatementCacheMode string
->>>>>>> release/octubre25
 		}
 		Redis struct {
 			Network  string
@@ -267,6 +269,10 @@ func Serve() error {
 			Sender               string
 			ActivationSubject    string
 			PasswordResetSubject string
+		}
+		Logging struct {
+			Level string
+			File  FileLoggingConfig
 		}
 	}{}
 
@@ -336,12 +342,21 @@ func Serve() error {
 	cfg.Email.ActivationSubject = v.GetString("email.activationSubject")
 	cfg.Email.PasswordResetSubject = v.GetString("email.passwordResetSubject")
 
-	logLevel := zap.DebugLevel
-	if !cfg.Gisquick.Debug {
-		logLevel = zap.InfoLevel
-	}
+	cfg.Logging.Level = v.GetString("logging.level")
+	cfg.Logging.File.Enabled = v.GetBool("logging.file.enabled")
+	cfg.Logging.File.Path = v.GetString("logging.file.path")
+	cfg.Logging.File.MaxSizeMB = v.GetInt("logging.file.maxSizeMB")
+	cfg.Logging.File.MaxBackups = v.GetInt("logging.file.maxBackups")
+	cfg.Logging.File.MaxAgeDays = v.GetInt("logging.file.maxAgeDays")
+	cfg.Logging.File.Compress = v.GetBool("logging.file.compress")
 
-	log, err := createLogger(logLevel)
+	fallbackLevel := zap.DebugLevel
+	if !cfg.Gisquick.Debug {
+		fallbackLevel = zap.InfoLevel
+	}
+	logLevel := parseLogLevel(cfg.Logging.Level, fallbackLevel)
+
+	log, err := createLogger(logLevel, cfg.Logging.File)
 	if err != nil {
 		return fmt.Errorf("failed to create logger: %w", err)
 	}
@@ -485,23 +500,55 @@ func Serve() error {
 	if err := s.Shutdown(ctx); err != nil {
 		log.Fatal(err)
 	}
-	log.Sync()
 	return nil
 }
 
-func createLogger(level zapcore.Level) (*zap.SugaredLogger, error) {
-	config := zap.NewDevelopmentConfig()
-
-	config.OutputPaths = []string{"stdout"}
-	config.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
-	config.DisableStacktrace = true
-	config.Level.SetLevel(level)
-
-	logger, err := config.Build()
-	if err != nil {
-		return nil, err
+func createLogger(level zapcore.Level, fileCfg FileLoggingConfig) (*zap.SugaredLogger, error) {
+	if !fileCfg.Enabled {
+		config := zap.NewDevelopmentConfig()
+		config.OutputPaths = []string{"stdout"}
+		config.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
+		config.DisableStacktrace = true
+		config.Level.SetLevel(level)
+		logger, err := config.Build()
+		if err != nil {
+			return nil, err
+		}
+		_, _ = zap.RedirectStdLogAt(logger, level)
+		return logger.Sugar(), nil
 	}
-	defer logger.Sync()
-	log := logger.Sugar()
-	return log, nil
+
+	logPath := strings.TrimSpace(fileCfg.Path)
+	if logPath == "" {
+		return nil, fmt.Errorf("logging.file.path is empty")
+	}
+
+	if dir := filepath.Dir(logPath); dir != "." && dir != "" {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return nil, fmt.Errorf("creating log directory %s: %w", dir, err)
+		}
+	}
+
+	rotator := &lumberjack.Logger{
+		Filename:   logPath,
+		MaxSize:    fileCfg.MaxSizeMB,
+		MaxBackups: fileCfg.MaxBackups,
+		MaxAge:     fileCfg.MaxAgeDays,
+		Compress:   fileCfg.Compress,
+	}
+
+	encoderCfg := zap.NewProductionEncoderConfig()
+	encoderCfg.EncodeTime = zapcore.ISO8601TimeEncoder
+	encoderCfg.EncodeLevel = zapcore.CapitalLevelEncoder
+	encoder := zapcore.NewConsoleEncoder(encoderCfg)
+	ws := zapcore.AddSync(rotator)
+	core := zapcore.NewCore(encoder, ws, level)
+
+	logger := zap.New(
+		core,
+		zap.AddCaller(),
+		zap.ErrorOutput(ws),
+	)
+	_, _ = zap.RedirectStdLogAt(logger, level)
+	return logger.Sugar(), nil
 }

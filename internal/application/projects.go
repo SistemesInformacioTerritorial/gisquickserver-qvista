@@ -101,7 +101,7 @@ func (s *projectService) ListProjectFiles(project string, checksum bool) ([]doma
 }
 
 func (s *projectService) GetUserProjects(username string) ([]domain.ProjectInfo, error) {
-	fmt.Printf("Passo per GetUserProjects")
+	s.log.Debugw("GetUserProjects", "username", username)
 	/*
 		projects, err := s.repo.UserProjects(username)
 		if err != nil {
@@ -119,27 +119,24 @@ func (s *projectService) GetUserProjects(username string) ([]domain.ProjectInfo,
 		return data, nil
 	*/
 
-	//jfs
-	fmt.Printf("Entrando a GetUserProjects\n")
 	projects, err := s.repo.UserProjects(username)
 	if err != nil {
-		fmt.Printf("Error obteniendo proyectos de usuario: %v\n", err)
+		s.log.Errorw("GetUserProjects user projects", "username", username, "error", err)
 		return nil, err
 	}
-	fmt.Printf("Proyectos obtenidos: %v\n", projects)
+	s.log.Debugw("GetUserProjects project list", "username", username, "count", len(projects))
 	data := make([]domain.ProjectInfo, len(projects))
 	for i, name := range projects {
-		fmt.Printf("Obteniendo información del proyecto: %s\n", name)
+		s.log.Debugw("GetUserProjects project", "project", name)
 		info, err := s.repo.GetProjectInfo(name)
 		if err != nil {
-			fmt.Printf("Error obteniendo información del proyecto %s: %v\n", name, err)
+			s.log.Errorw("GetUserProjects project info", "project", name, "error", err)
 			// TODO: skip or fail?
 			return nil, err
 		}
 		data[i] = info
-		fmt.Printf("Información del proyecto obtenida: %v\n", info)
 	}
-	fmt.Printf("Saliendo de GetUserProjects con datos: %v\n", data)
+	s.log.Debugw("GetUserProjects done", "username", username, "count", len(data))
 	return data, nil
 
 }

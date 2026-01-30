@@ -127,23 +127,21 @@ func (s *Server) handleGetUserProjects(c echo.Context) error {
 }*/
 //jfs
 func (s *Server) handleGetUserProjects(c echo.Context) error {
-	fmt.Println("Passant per handleGetUserProjects")
+	s.log.Debug("handleGetUserProjects")
 	username := c.Param("user")
-	fmt.Println("username rebut", username)
+	s.log.Debugw("handleGetUserProjects request", "username", username)
 	// Dividir el nombre de usuario en tokens usando '/' como separador
 	tokens := strings.Split(username, "/")
 
 	// Tomar solo el primer token como el nombre de usuario
 	username = tokens[0]
-
-	fmt.Println("Username corregit: ", username)
+	s.log.Debugw("handleGetUserProjects normalized", "username", username)
 	data, err := s.projects.GetUserProjects(username)
 	if err != nil {
-		fmt.Println("Error: ", err)
+		s.log.Errorw("handleGetUserProjects", "username", username, zap.Error(err))
 		return err
 	}
-	fmt.Println("Data: ", data)
-	//fmt.Println("JSON: ", c.JSON(http.StatusOK, data))
+	s.log.Debugw("handleGetUserProjects result", "count", len(data))
 	return c.JSON(http.StatusOK, data)
 }
 
@@ -257,7 +255,7 @@ func (s *Server) handleUpload() func(echo.Context) error {
 				if now.Sub(lastNotification).Seconds() > 0.5 {
 
 					totalProgress := percProgress(uploadedSize, int(totalSize))
-					s.log.Infow("upload progress", "file", part.FormName(), "uploaded", uploaded, "delta", last, "totalUploaded", uploadedSize, "totalSize", totalSize, "totalProgress", totalProgress)
+					s.log.Debugw("upload progress", "file", part.FormName(), "uploaded", uploaded, "delta", last, "totalUploaded", uploadedSize, "totalSize", totalSize, "totalProgress", totalProgress)
 					s.sws.AppChannel().Send(user.Username, "UploadProgress", fileUploadProgress{uploadProgress, totalProgress})
 
 					lastNotification = now
