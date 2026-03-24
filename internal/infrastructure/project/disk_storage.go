@@ -1,6 +1,7 @@
 package project
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha1"
 	"encoding/json"
@@ -239,6 +240,10 @@ func saveJsonFile(path string, data interface{}) error {
 		return err
 	}
 	return nil
+}
+
+type filesIndexOnDisk struct {
+	Index map[string]domain.FileInfo `json:"Index"`
 }
 
 func (s *DiskStorage) saveConfigFile(projectName, filename string, data interface{}) error {
@@ -806,23 +811,30 @@ func (s *DiskStorage) SaveThumbnail(projectName string, r io.Reader) error {
 
 func (s *DiskStorage) loadFilesIndex(projectName string) (map[string]domain.FileInfo, error) {
 	s.log.Infow("loading filesIndex", "project", projectName)
-	var index map[string]domain.FileInfo
+	index := make(map[string]domain.FileInfo)
 	indexPath := filepath.Join(s.ProjectsRoot, projectName, ".gisquick", "filesmap.json")
-	f, err := os.Open(indexPath)
+	content, err := os.ReadFile(indexPath)
 	if err != nil {
-		index = make(map[string]domain.FileInfo)
 		if errors.Is(err, os.ErrNotExist) {
 			return index, nil
 		}
 		return index, fmt.Errorf("reading index file: %w", err)
 	}
-	defer f.Close()
-	decoder := json.NewDecoder(f)
-	if err := decoder.Decode(&index); err != nil {
-		// s.log.Errorw("parsing project files index", zap.Error(err))
-		return make(map[string]domain.FileInfo), fmt.Errorf("parsing index file: %w", err)
+	if len(bytes.TrimSpace(content)) == 0 {
+		s.log.Warnw("files index file is empty, rebuilding index", "project", projectName, "path", indexPath)
+		return index, nil
 	}
-	return index, nil
+	if err := json.Unmarshal(content, &index); err == nil {
+		return index, nil
+	}
+
+	legacy := filesIndexOnDisk{}
+	if err := json.Unmarshal(content, &legacy); err == nil && legacy.Index != nil {
+		s.log.Warnw("loaded legacy wrapped files index format", "project", projectName, "path", indexPath, "entries", len(legacy.Index))
+		return legacy.Index, nil
+	}
+
+	return make(map[string]domain.FileInfo), fmt.Errorf("parsing index file: unsupported format")
 }
 
 func (s *DiskStorage) filesIndex(projectName string) (*FilesIndex, error) {
@@ -950,7 +962,7 @@ func (s *DiskStorage) UpdateFiles(projectName string, info domain.FilesChanges, 
 			index.Delete(path)
 		}
 	}
-	if err := saveJsonFile(filepath.Join(s.ProjectsRoot, projectName, ".gisquick", "filesmap.json"), index); err != nil {
+	if err := saveJsonFile(filepath.Join(s.ProjectsRoot, projectName, ".gisquick", "filesmap.json"), index.Index); err != nil {
 		s.log.Errorw("saving files index", "project", projectName, zap.Error(err))
 		return nil, fmt.Errorf("saving files index: %w", err)
 	}

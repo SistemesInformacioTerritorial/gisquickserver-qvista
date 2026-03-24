@@ -9,6 +9,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/gisquick/gisquick-server/internal/infrastructure/cache"
@@ -18,7 +19,7 @@ import (
 
 type Plugins struct {
 	XMLName xml.Name       `xml:"plugins"`
-	Plugins []PyQgisPlugin `xml:"plugins"`
+	Plugins []PyQgisPlugin `xml:"pyqgis_plugin"`
 }
 
 type PyQgisPlugin struct {
@@ -64,10 +65,30 @@ func (c CDATA) MarshalXML(e *xml.Encoder, start xml.StartElement) error {
 
 func (s *Server) handleDownloadPlugin(rootDir string) func(echo.Context) error {
 	return func(c echo.Context) error {
-		filename := c.Param("*")
+		filename := filepath.Clean(strings.TrimPrefix(c.Param("*"), "/"))
 		fpath := filepath.Join(rootDir, filename)
+		relPath, err := filepath.Rel(rootDir, fpath)
+		if err != nil || strings.HasPrefix(relPath, "..") {
+			return echo.ErrForbidden
+		}
 		return c.File(fpath)
 	}
+}
+
+func (s *Server) pluginBaseURL(c echo.Context) (*url.URL, error) {
+	baseURL := strings.TrimSpace(s.Config.PluginsURL)
+	if baseURL == "" {
+		scheme := c.Scheme()
+		if forwardedProto := c.Request().Header.Get("X-Forwarded-Proto"); forwardedProto != "" {
+			scheme = forwardedProto
+		}
+		baseURL = fmt.Sprintf("%s://%s/plugins", scheme, c.Request().Host)
+	}
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return nil, fmt.Errorf("parsing plugins url: %w", err)
+	}
+	return u, nil
 }
 
 func (s *Server) platformPluginRepoHandler1(rootDir string) func(echo.Context) error {
@@ -116,6 +137,7 @@ func (s *Server) platformPluginRepoHandler(rootDir string) func(echo.Context) er
 			// s.log.Errorw("reading qgis plugin metadata", zap.Error(err))
 			return plugin, fmt.Errorf("reading qgis plugin metadata: %w", err)
 		}
+		defer f.Close()
 		if err := json.NewDecoder(f).Decode(&plugin); err != nil {
 			// s.log.Errorw("parsing qgis plugin metadata", zap.Error(err))
 			return plugin, fmt.Errorf("parsing qgis plugin metadata: %w", err)
@@ -125,7 +147,10 @@ func (s *Server) platformPluginRepoHandler(rootDir string) func(echo.Context) er
 
 	return func(c echo.Context) error {
 		platform := c.Param("platform")
-		// siteURL, _ := url.Parse(s.Config.SiteURL)
+		baseURL, err := s.pluginBaseURL(c)
+		if err != nil {
+			return fmt.Errorf("building plugins base url: %w", err)
+		}
 
 		files, err := filepath.Glob(filepath.Join(rootDir, platform, "*/*.json"))
 		if err != nil {
@@ -146,17 +171,17 @@ func (s *Server) platformPluginRepoHandler(rootDir string) func(echo.Context) er
 				return fmt.Errorf("getting qgis plugin metadata: %w", err)
 			}
 			pluginName := filepath.Base(filepath.Dir(filename))
-			// plugin.Updated = updated
-			if plugin.Icon != "" {
-				// plugin.Icon = fmt.Sprintf("/api/plugins/download/%s/%s/%s", platform, pluginName, plugin.Icon)
-				// plugin.Icon = fmt.Sprintf("/plugins/download/%s/%s/%s", platform, pluginName, plugin.Icon)
-				plugin.Icon = path.Join("/download", platform, pluginName, plugin.Icon)
-			}
+			plugin.Updated = updated.UTC()
 
-			relURL := path.Join("download", platform, pluginName, plugin.FileName)
-			u, _ := url.Parse(s.Config.PluginsURL)
-			u.Path = path.Join(u.Path, relURL)
-			plugin.DownloadURL = u.String()
+			downloadURL := *baseURL
+			downloadURL.Path = path.Join(downloadURL.Path, "download", platform, pluginName, plugin.FileName)
+			plugin.DownloadURL = downloadURL.String()
+
+			if plugin.Icon != "" {
+				iconURL := *baseURL
+				iconURL.Path = path.Join(iconURL.Path, "download", platform, pluginName, plugin.Icon)
+				plugin.Icon = iconURL.String()
+			}
 
 			// s.log.Infow("plugin metadata", "meta", plugin)
 			plugins = append(plugins, plugin)

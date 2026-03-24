@@ -15,6 +15,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -165,6 +166,10 @@ type ProgressReader struct {
 	lastVal  int
 }
 
+type closeFunc func() error
+
+func (c closeFunc) Close() error { return c() }
+
 func (r *ProgressReader) Read(p []byte) (n int, err error) {
 	n, err = r.Reader.Read(p)
 	r.Progress += n
@@ -246,7 +251,21 @@ func (s *Server) handleUpload() func(echo.Context) error {
 			}
 			var partReader io.ReadCloser = part
 			if strings.HasSuffix(part.FileName(), ".gz") && !strings.HasSuffix(part.FormName(), ".gz") {
-				partReader, _ = gzip.NewReader(part)
+				gzReader, gzErr := gzip.NewReader(part)
+				if gzErr != nil {
+					s.log.Warnw("invalid gzip upload; using raw stream", "file", part.FileName(), "form", part.FormName(), zap.Error(gzErr))
+				} else {
+					partReader = struct {
+						io.Reader
+						io.Closer
+					}{
+						Reader: gzReader,
+						Closer: closeFunc(func() error {
+							_ = gzReader.Close()
+							return part.Close()
+						}),
+					}
+				}
 			}
 			pr := &ProgressReader{Reader: partReader, Step: 32 * 1024, Callback: func(uploaded, last int) {
 				uploadProgress[part.FormName()] = percProgress(uploaded, uploadSizeMap[part.FormName()])
@@ -393,10 +412,7 @@ func (s *Server) handleProjectOws() func(echo.Context) error {
 			}
 			return err
 		}
-		// TODO: hardcoded /publish/ directory!
-		// jfs, ja ho faig jo
-		//	owsProject := filepath.Join("/publish/", projectName, p.QgisFile)
-		owsProject := filepath.Join("c:/gisquick/publish/", projectName, p.QgisFile)
+		owsProject := filepath.Join(s.Config.ProjectsRoot, projectName, p.QgisFile)
 
 		s.log.Infow("GetMap", "ows_project", owsProject)
 		query := c.Request().URL.Query()
@@ -747,17 +763,14 @@ func (s *Server) handleProjectReload(c echo.Context) error {
 		}
 		return err
 	}
-	// TODO: hardcoded /publish/ directory!
-	// jfs ja ho faig jo
-	//owsProject := filepath.Join("/publish/", projectName, p.QgisFile)
-	owsProject := filepath.Join("c:/gisquick/publish/", projectName, p.QgisFile)
+	owsProject := filepath.Join(s.Config.ProjectsRoot, projectName, p.QgisFile)
 	params := url.Values{"MAP": {owsProject}}
 
 	req, err := http.NewRequest(http.MethodPost, s.Config.MapserverURL, nil)
 	if err != nil {
 		return fmt.Errorf("[handleProjectReload] building request: %w", err)
 	}
-	req.URL.Path = filepath.Join(req.URL.Path, "/reload")
+	req.URL.Path = path.Join(req.URL.Path, "/reload")
 	req.URL.RawQuery = params.Encode()
 	// s.log.Infow("[handleProjectReload]", "project", projectName, "url", req.URL.String())
 
