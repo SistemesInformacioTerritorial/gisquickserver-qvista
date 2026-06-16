@@ -529,6 +529,24 @@ func (s *Server) handleGetProjectInfo(c echo.Context) error {
 	return c.JSON(http.StatusOK, info)
 }
 
+func (s *Server) handleGetProjectQgisFile(c echo.Context) error {
+	projectName := c.Get("project").(string)
+	info, err := s.projects.GetProjectInfo(projectName)
+	if err != nil {
+		if errors.Is(err, domain.ErrProjectNotExists) {
+			return echo.NewHTTPError(http.StatusBadRequest, "Project does not exists")
+		}
+		return fmt.Errorf("handleGetProjectQgisFile: %w", err)
+	}
+	if info.QgisFile == "" {
+		return echo.NewHTTPError(http.StatusNotFound, "Project has no QGIS file")
+	}
+
+	return c.JSON(http.StatusOK, map[string]string{
+		"qgis_file": info.QgisFile,
+	})
+}
+
 func (s *Server) handleUpdateProjectMeta() func(echo.Context) error {
 	return func(c echo.Context) error {
 		projectName := c.Get("project").(string)

@@ -68,6 +68,7 @@ func (s *Server) AddRoutes(e *echo.Echo) {
 	e.GET("/api/project/files/:user/:name", s.handleGetProjectFiles(), ProjectAdminAccess)
 	e.DELETE("/api/project/files/:user/:name", s.handleDeleteProjectFiles(), ProjectAdminAccess)
 	e.GET("/api/project/info/:user/:name", s.handleGetProjectInfo, ProjectAdminAccess)
+	e.GET("/api/project/qgis-file/:user/:name", s.handleGetProjectQgisFile, ProjectAdminAccess)
 	e.GET("/api/project/full-info/:user/:name", s.handleGetProjectFullInfo(), ProjectAdminAccess)
 
 	e.GET("/api/project/media/:user/:name/*", s.mediaFileHandler("/tmp/thumbnails"), ProjectAccess)
